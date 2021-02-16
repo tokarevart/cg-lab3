@@ -36,14 +36,29 @@ QLine horiz_line(int y) {
     return {QPoint(0, y), QPoint(1, y)};
 }
 
+std::optional<QPointF> segm_horizline_intersection(QLine s, int y) {
+    int p0y = s.p1().y();
+    int p1y = s.p2().y();
+    if (p0y == p1y) {
+        return std::nullopt;
+    }
+    double t = static_cast<double>(y - p0y) / (p1y - p0y);
+    if (t < 0.0 || t > 1) {
+        return std::nullopt;
+    } else {
+        return QPointF(s.p1()) + t * QPointF(s.p2() - s.p1());
+    }
+}
+
 QList<double> polygon_horiz_intersections(const QList<QLine> &edges, int y) {
-    auto horizlile = horiz_line(y);
+//    auto horizlile = horiz_line(y);
     QList<double> res;
     res.reserve(2);
     auto prev_edge = edges.last();
     for (int i = 0; i < edges.size(); ++i) {
         auto cur_edge = edges[i];
-        auto ointer = segm_line_intersection(cur_edge, horizlile);
+//        auto ointer = segm_line_intersection(cur_edge, horizlile);
+        auto ointer = segm_horizline_intersection(cur_edge, y);
         if (ointer.has_value()) {
             if (cur_edge.p1().y() == y) {
                 auto p0 = prev_edge.p1();
@@ -60,20 +75,6 @@ QList<double> polygon_horiz_intersections(const QList<QLine> &edges, int y) {
     }
     std::sort(res.begin(), res.end());
     return res;
-}
-
-std::optional<QPointF> segm_horizline_intersection(QLine s, int y) {
-    int p0y = s.p1().y();
-    int p1y = s.p2().y();
-    if (p0y == p1y) {
-        return std::nullopt;
-    }
-    double t = static_cast<double>(y - p0y) / (p1y - p0y);
-    if (t < 0.0 || t > 1) {
-        return std::nullopt;
-    } else {
-        return QPointF(s.p1()) + t * QPointF(s.p2() - s.p1());
-    }
 }
 
 void draw_polygon(
