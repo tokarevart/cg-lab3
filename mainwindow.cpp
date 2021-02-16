@@ -2,6 +2,7 @@
 
 #include "sptalgs.h"
 #include <QVector2D>
+#include <QGraphicsPixmapItem>
 #include <algorithm>
 
 #include "ui_mainwindow.h"
@@ -247,10 +248,11 @@ struct LocalScene {
     Mesh mesh;
 
     LocalScene(Scene scene) : light(scene.light), mesh(scene.mesh) {
+        auto campos = scene.cam.pos;
         spt::mat3d rot = scene.cam.orient.transpose().inversed();
-        light.pos = spt::dot(rot, light.pos);
+        light.pos = spt::dot(rot, light.pos) - campos;
         for (auto& vert : mesh.verts) {
-            vert = spt::dot(rot, vert);
+            vert = spt::dot(rot, vert) - campos;
         }
         for (auto& normal : mesh.normals) {
             normal = spt::dot(rot, normal);
@@ -325,6 +327,16 @@ void render_full(QImage& image, const Scene& scene) {
     }
 }
 
+spt::mat3d direct_along_z(spt::mat3d orient, spt::vec3d z) {
+    auto y1 = spt::cross(z, orient[0]);
+    auto x1 = spt::cross(y1, z);
+    auto x2 = spt::cross(orient[1], z);
+    auto y2 = spt::cross(z, x2);
+    auto x = (x1 + x2) * 0.5;
+    auto y = (y1 + y2) * 0.5;
+    return spt::mat3d(x, y, z);
+}
+
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent), ui(new Ui::MainWindow) {
     ui->setupUi(this);
@@ -345,3 +357,41 @@ MainWindow::MainWindow(QWidget *parent)
 }
 
 MainWindow::~MainWindow() { delete ui; }
+
+void MainWindow::on_render_button_clicked() {
+    QImage image(ui->gview0->size(), QImage::Format_RGB32);
+    image.fill(Qt::white);
+
+    Camera cam;
+    cam.pos = spt::vec3d({
+        ui->campos_x_sbox->value(),
+        ui->campos_y_sbox->value(),
+        ui->campos_z_sbox->value()
+    });
+    cam.orient = spt::mat3d(direct_along_z(
+        spt::mat3d::identity(), spt::vec3d({
+            ui->camdir_x_sbox->value(),
+            ui->camdir_y_sbox->value(),
+            ui->camdir_z_sbox->value()
+    })));
+    cam.scale = 100.0;
+
+    spt::vec3d lightpos({
+        ui->campos_x_sbox->value(),
+        ui->campos_y_sbox->value(),
+        ui->campos_z_sbox->value()
+    });
+    IllumParams illpars;
+    illpars.ia = 1.0;
+    illpars.il = 10.0;
+    illpars.ka = 0.15;
+    illpars.kd = illpars.ka;
+    PointLight light(lightpos, SimpleIllum(illpars));
+
+    Mesh mesh;
+    //
+
+    scenes[0]->clear();
+    scenes[0]->setSceneRect(ui->gview0->rect());
+    scenes[0]->addPixmap(QPixmap::fromImage(image))->setPos(0, 0);
+}

@@ -170,7 +170,6 @@ vec(const std::array<ValueType, Dim>& x) -> vec<Dim, ValueType>;
 template <std::size_t Dim, typename ValueType>
 spt::vec<Dim, ValueType> operator*(ValueType scalar, const spt::vec<Dim, ValueType>& v) {
     return v * scalar;
-
 }
 
 // taken from boost

@@ -31,6 +31,8 @@ class MainWindow : public QMainWindow {
 
     void on_thous_gen_gl_btn_clicked();
 
+    void on_render_button_clicked();
+
   private:
     Ui::MainWindow *ui;
     std::array<QGraphicsScene *, 4> scenes;

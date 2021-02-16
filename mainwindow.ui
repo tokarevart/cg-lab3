@@ -28,16 +28,16 @@
    </property>
    <layout class="QVBoxLayout" name="verticalLayout">
     <item>
-     <layout class="QHBoxLayout" name="camera_layout">
+     <layout class="QHBoxLayout" name="campos_layout">
       <item>
-       <widget class="QLabel" name="camera_label">
+       <widget class="QLabel" name="campos_label">
         <property name="text">
-         <string>Camera direction x,y,z</string>
+         <string>Camera position x,y,z</string>
         </property>
        </widget>
       </item>
       <item>
-       <widget class="QDoubleSpinBox" name="camera_x_sbox">
+       <widget class="QDoubleSpinBox" name="campos_x_sbox">
         <property name="minimum">
          <double>-100.000000000000000</double>
         </property>
@@ -50,7 +50,7 @@
        </widget>
       </item>
       <item>
-       <widget class="QDoubleSpinBox" name="camera_y_sbox">
+       <widget class="QDoubleSpinBox" name="campos_y_sbox">
         <property name="minimum">
          <double>-100.000000000000000</double>
         </property>
@@ -63,7 +63,7 @@
        </widget>
       </item>
       <item>
-       <widget class="QDoubleSpinBox" name="camera_z_sbox">
+       <widget class="QDoubleSpinBox" name="campos_z_sbox">
         <property name="minimum">
          <double>-100.000000000000000</double>
         </property>
@@ -72,6 +72,56 @@
         </property>
         <property name="value">
          <double>-2.000000000000000</double>
+        </property>
+       </widget>
+      </item>
+     </layout>
+    </item>
+    <item>
+     <layout class="QHBoxLayout" name="camdir_layout">
+      <item>
+       <widget class="QLabel" name="camdir_label">
+        <property name="text">
+         <string>Camera direction x,y,z</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QDoubleSpinBox" name="camdir_x_sbox">
+        <property name="minimum">
+         <double>-100.000000000000000</double>
+        </property>
+        <property name="maximum">
+         <double>100.000000000000000</double>
+        </property>
+        <property name="value">
+         <double>2.000000000000000</double>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QDoubleSpinBox" name="camdir_y_sbox">
+        <property name="minimum">
+         <double>-100.000000000000000</double>
+        </property>
+        <property name="maximum">
+         <double>100.000000000000000</double>
+        </property>
+        <property name="value">
+         <double>1.000000000000000</double>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QDoubleSpinBox" name="camdir_z_sbox">
+        <property name="minimum">
+         <double>-100.000000000000000</double>
+        </property>
+        <property name="maximum">
+         <double>100.000000000000000</double>
+        </property>
+        <property name="value">
+         <double>2.000000000000000</double>
         </property>
        </widget>
       </item>
