@@ -54,7 +54,7 @@ struct mat<3, ValueType> {
             static_cast<value_type>(1) }) };
     }
 
-    mat& transpose() const {
+    mat& transpose() {
         std::swap(x[0][1], x[1][0]);
         std::swap(x[0][2], x[2][0]);
         std::swap(x[1][2], x[2][1]);

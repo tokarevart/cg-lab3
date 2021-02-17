@@ -19,22 +19,10 @@ class MainWindow : public QMainWindow {
     ~MainWindow();
 
   private slots:
-    void on_gen_btn_clicked();
-
-    void on_gen_builtin_btn_clicked();
-
-    void on_thous_gen_builtin_btn_clicked();
-
-    void on_thous_gen_btn_clicked();
-
-    void on_gen_gl_btn_clicked();
-
-    void on_thous_gen_gl_btn_clicked();
-
     void on_render_button_clicked();
 
   private:
     Ui::MainWindow *ui;
-    std::array<QGraphicsScene *, 4> scenes;
+    std::array<QGraphicsScene *, 4> gscenes;
 };
 #endif // MAINWINDOW_H

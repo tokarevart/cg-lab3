@@ -93,9 +93,9 @@ void draw_polygon(
     for (int y = brect.top(); y < brect.bottom(); ++y) {
         auto xinters = polygon_horiz_intersections(edges, y);
         for (int i = 0; i < xinters.size(); i += 2) {
-            int xbeg = std::max(static_cast<int>(xinters[i] + 0.5), 0);
+            int xbeg = std::max(static_cast<int>(xinters[i]), 0);
             int xend = std::min(
-                static_cast<int>(xinters[i + 1] + 1.5),
+                static_cast<int>(xinters[i + 1]) + 1,
                 image.width()
             );
             int start = y * image.width();
@@ -106,11 +106,52 @@ void draw_polygon(
     }
 }
 
-// 0 <= intens <= 1
-void draw_point(QImage &image, QPoint p, double intens) {
-    int c = static_cast<int>(intens * 255.0);
-    image.setPixel(p, qRgb(c, c, c));
-}
+struct Viewport {
+    QImage* image;
+
+    int width() const {
+        return image->width();
+    }
+
+    int height() const {
+        return image->height();
+    }
+
+    // 0 <= intensity <= 1
+    void draw_point_grayscale(QPoint p, double intensity) {
+        int c = std::min(static_cast<int>(intensity * 255.0), 255);
+        image->setPixel(p, qRgb(c, c, c));
+    }
+
+    Viewport() {}
+    Viewport(QImage& im) : image(&im) {}
+};
+
+struct ViewTransformer {
+    const Viewport* viewport;
+    double pixelsize;
+    spt::vec2d image_center;
+
+    spt::vec3d to_localworld(spt::vec2i pos) const {
+        spt::vec2d fpos(pos);
+        spt::vec2d res2d = (fpos - image_center) / pixelsize;
+        return spt::vec3d({res2d[0], -res2d[1], 0.0});
+    }
+
+    spt::vec2i to_viewport(spt::vec2d pos) const {
+        auto scaled = pos * pixelsize;
+        return spt::vec2i(scaled + image_center);
+    }
+
+    spt::vec2i proj_on_viewport(spt::vec3d pos) const {
+        return to_viewport(spt::vec2d({pos[0], pos[1]}));
+    }
+
+    ViewTransformer(const Viewport& view, double pixelsize)
+        : viewport(&view), pixelsize(pixelsize) {
+        image_center = spt::vec2d({viewport->width() * 0.5, viewport->height() * 0.5});
+    }
+};
 
 struct IllumParams {
     double ia, ka, il, kd;
@@ -120,7 +161,7 @@ class SimpleIllum {
   public:
     double compute_intensity(spt::vec3d light, spt::vec3d normal) const {
         return m_diff_light +
-               m_diff_refl_koef * std::abs(-spt::dot(normal, light));
+               m_diff_refl_koef * std::max(0.0, -spt::dot(normal, light));
     }
 
     void set_params(IllumParams illum) {
@@ -175,7 +216,7 @@ struct PointLight {
     SimpleIllum illum;
 
     double compute_intensity(spt::vec3d at, spt::vec3d normal) const {
-        return illum.compute_intensity(at - this->pos, normal);
+        return illum.compute_intensity((at - this->pos).normalize(), normal);
     }
 
     PointLight() {}
@@ -187,7 +228,6 @@ struct PointLight {
 struct Camera {
     spt::vec3d pos;
     spt::mat3d orient;
-    double scale;
 };
 
 using Vert = spt::vec3d;
@@ -202,6 +242,25 @@ struct Face {
             return {verts[i], verts[0]};
         }
     }
+
+    bool contains_vert(std::size_t vert_id) const {
+        if (verts[0] == vert_id ||
+            verts[1] == vert_id ||
+            verts[2] == vert_id) {
+            return true;
+        } else {
+            return false;
+        }
+    }
+
+    bool contains_any_vert(const std::vector<std::size_t>& verts_ids) const {
+        for (std::size_t id : verts_ids) {
+            if (contains_vert(id)) {
+                return true;
+            }
+        }
+        return false;
+    }
 };
 
 struct Mesh {
@@ -215,7 +274,14 @@ struct Mesh {
         return spt::cross(edgevec0, edgevec1).normalize();
     }
 
+    spt::vec3d face_center(const Face& face) const {
+        return (verts[face.verts[0]]
+                + verts[face.verts[1]]
+                + verts[face.verts[2]]) / 3.0;
+    }
+
     void update_normals() {
+        normals = std::vector(verts.size(), spt::vec3d());
         std::vector<std::size_t> counts(verts.size(), 0);
         for (auto& face : faces) {
             auto normal = face_normal(face);
@@ -237,39 +303,10 @@ struct Mesh {
     }
 };
 
-struct Scene {
-    Camera cam;
-    PointLight light;
-    Mesh mesh;
-};
-
-struct LocalScene {
-    PointLight light;
-    Mesh mesh;
-
-    LocalScene(Scene scene) : light(scene.light), mesh(scene.mesh) {
-        auto campos = scene.cam.pos;
-        spt::mat3d rot = scene.cam.orient.transpose().inversed();
-        light.pos = spt::dot(rot, light.pos) - campos;
-        for (auto& vert : mesh.verts) {
-            vert = spt::dot(rot, vert) - campos;
-        }
-        for (auto& normal : mesh.normals) {
-            normal = spt::dot(rot, normal);
-        }
-    }
-};
-
-spt::vec2d pixel_to_actual(const QImage &image, spt::vec2i pixel, double delta) {
-    spt::vec2d fpix(pixel);
-    spt::vec2d center({image.width() * 0.5, image.height() * 0.5});
-    spt::vec2d centered = spt::vec2d({fpix[0], fpix[1]}) - center;
-    return centered * delta;
-}
-
 struct Inter {
     spt::vec3d at;
     spt::vec3d normal;
+    std::size_t face_id;
 };
 
 std::optional<Inter> ray_mesh_nearest_intersection(
@@ -277,9 +314,53 @@ std::optional<Inter> ray_mesh_nearest_intersection(
 
     spt::vec3d normal;
     spt::vec3d at;
-    double max_z = std::numeric_limits<double>::min();
+    std::size_t face_id;
+    double max_z = std::numeric_limits<double>::lowest();
     bool no_inters = true;
-    for (auto& face : mesh.faces) {
+    for (std::size_t i = 0; i < mesh.faces.size(); ++i) {
+        auto face = mesh.faces[i];
+        auto ointer = spt::ray_intersect_triangle(
+            origin, dir,
+            mesh.verts[face.verts[0]],
+            mesh.verts[face.verts[1]],
+            mesh.verts[face.verts[2]]
+            );
+        if (!ointer.has_value()) {
+            continue;
+        }
+
+        auto inter = ointer.value();
+        if (inter[2] > max_z) {
+            max_z = inter[2];
+            at = inter;
+            normal = mesh.face_normal(face);
+            no_inters = false;
+            face_id = i;
+        }
+    }
+
+    if (no_inters) {
+        return std::nullopt;
+    } else {
+        return Inter{at, normal, face_id};
+    }
+}
+
+std::optional<Inter> vertray_mesh_nearest_intersection(
+    std::size_t origin_vert, spt::vec3d dir, const Mesh& mesh) {
+
+    spt::vec3d normal;
+    spt::vec3d at;
+    std::size_t face_id;
+    double max_z = std::numeric_limits<double>::lowest();
+    bool no_inters = true;
+    for (std::size_t i = 0; i < mesh.faces.size(); ++i) {
+        auto face = mesh.faces[i];
+        if (face.contains_vert(origin_vert)) {
+            continue;
+        }
+
+        auto origin = mesh.verts[origin_vert];
         auto ointer = spt::ray_intersect_triangle(
             origin, dir,
             mesh.verts[face.verts[0]],
@@ -296,90 +377,214 @@ std::optional<Inter> ray_mesh_nearest_intersection(
             at = inter;
             normal = mesh.face_normal(face);
             no_inters = false;
+            face_id = i;
         }
     }
 
     if (no_inters) {
         return std::nullopt;
     } else {
-        return Inter{at, normal};
+        return Inter{at, normal, face_id};
     }
 }
 
-void render_full(QImage& image, const Scene& scene) {
-    double delta = 1.0 / scene.cam.scale;
+bool vertray_intersect_mesh(
+    std::size_t origin_vert, spt::vec3d dir, const Mesh& mesh) {
+
+    for (std::size_t i = 0; i < mesh.faces.size(); ++i) {
+        auto face = mesh.faces[i];
+        if (face.contains_vert(origin_vert)) {
+            continue;
+        }
+
+        auto origin = mesh.verts[origin_vert];
+        auto ointer = spt::ray_intersect_triangle(
+            origin, dir,
+            mesh.verts[face.verts[0]],
+            mesh.verts[face.verts[1]],
+            mesh.verts[face.verts[2]]
+        );
+        if (ointer.has_value()) {
+            return true;
+        }
+    }
+    return false;
+}
+
+struct Scene {
+    Camera cam;
+    PointLight light;
+    Mesh mesh;
+};
+
+struct LocalScene {
+    PointLight light;
+    Mesh mesh;
+
+    void backface_cull() {
+        std::vector<Face> filtered;
+        for (auto& face : mesh.faces) {
+            if (mesh.face_normal(face)[2] > 0) {
+                filtered.push_back(face);
+            }
+        }
+        mesh.faces = std::move(filtered);
+    }
+
+    // does not view frustum
+    void occlusion_cull() {
+        std::vector<std::size_t> invis_verts;
+        spt::vec3d backward({0.0, 0.0, 1.0});
+        for (std::size_t i = 0; i < mesh.verts.size(); ++i) {
+            if (vertray_intersect_mesh(i, backward, mesh)) {
+                invis_verts.push_back(i);
+            }
+        }
+        if (invis_verts.empty()) {
+            return;
+        }
+
+        std::vector<Vert> vis_verts;
+        std::vector<std::size_t> vis_verts_ids;
+        vis_verts.reserve(mesh.verts.size() - invis_verts.size());
+        std::size_t cur_ivert_i = 0;
+        for (std::size_t i = 0; i < mesh.verts.size(); ++i) {
+            if (i == invis_verts[cur_ivert_i]) {
+                ++cur_ivert_i;
+            } else {
+                vis_verts.push_back(mesh.verts[i]);
+                vis_verts_ids.push_back(i);
+            }
+        }
+
+        auto face_visible = [&vis_verts_ids](const Face& face) {
+            for (std::size_t vert_id : face.verts) {
+                if (std::find(
+                        vis_verts_ids.begin(),
+                        vis_verts_ids.end(),
+                        vert_id) != vis_verts_ids.end()) {
+                    return true;
+                }
+            }
+            return false;
+        };
+
+        std::vector<Face> vis_faces;
+        for (auto& face : mesh.faces) {
+            if (face_visible(face)) {
+                vis_faces.push_back(face);
+            }
+        }
+
+        mesh.verts = std::move(vis_verts);
+        mesh.faces = std::move(vis_faces);
+    }
+
+//    void view_frustum(ViewTransformer vtran) { }
+
+    LocalScene(Scene scene) : light(scene.light), mesh(scene.mesh) {
+        auto campos = scene.cam.pos;
+        spt::mat3d rot = scene.cam.orient.transpose().inversed();
+        light.pos = spt::dot(rot, light.pos - campos);
+        for (auto& vert : mesh.verts) {
+            vert = spt::dot(rot, vert - campos);
+        }
+        for (auto& normal : mesh.normals) {
+            normal = spt::dot(rot, normal);
+        }
+    }
+};
+
+void render_full(Viewport& viewport, ViewTransformer vtran, const Scene& scene) {
     LocalScene locscene(scene);
-    for (int ay = 0; ay < image.height(); ++ay) {
-        for (int ax = 0; ax < image.width(); ++ax) {
+    for (int ay = 0; ay < viewport.height(); ++ay) {
+        for (int ax = 0; ax < viewport.width(); ++ax) {
             spt::vec2i absolute({ax, ay});
-            auto p_xy = pixel_to_actual(image, absolute, delta);
-            auto origin = spt::vec3d({p_xy[0], p_xy[1], 0.0});
+            auto origin = vtran.to_localworld(absolute);
             auto dir = spt::vec3d({0.0, 0.0, -1.0});
             auto ointer = ray_mesh_nearest_intersection(origin, dir, locscene.mesh);
             if (ointer.has_value()) {
                 auto inter = ointer.value();
                 double intensity = locscene.light.compute_intensity(inter.at, inter.normal);
-                int inten_c = std::min(static_cast<int>(intensity), 255);
-                auto inten_rgb = qRgb(inten_c, inten_c, inten_c);
-                image.setPixel(ax, ay, inten_rgb);
+                viewport.draw_point_grayscale({ax, ay}, intensity);
             }
         }
     }
 }
 
-spt::mat3d direct_along_z(spt::mat3d orient, spt::vec3d z) {
-    auto y1 = spt::cross(z, orient[0]);
-    auto x1 = spt::cross(y1, z);
-    auto x2 = spt::cross(orient[1], z);
-    auto y2 = spt::cross(z, x2);
-    auto x = (x1 + x2) * 0.5;
-    auto y = (y1 + y2) * 0.5;
-    return spt::mat3d(x, y, z);
+void render_simple(Viewport& viewport, ViewTransformer vtran, const Scene& scene) {
+    LocalScene locscene(scene);
+    auto& mesh = locscene.mesh;
+    auto& light = locscene.light;
+    std::vector<double> intesities;
+    intesities.reserve(mesh.faces.size());
+    for (auto& face : mesh.faces) {
+        auto center = mesh.face_center(face);
+        auto normal = mesh.face_normal(face);
+        double intensity = light.compute_intensity(center, normal);
+        intesities.push_back(intensity);
+    }
+
+    for (int ay = 0; ay < viewport.height(); ++ay) {
+        for (int ax = 0; ax < viewport.width(); ++ax) {
+            spt::vec2i absolute({ax, ay});
+            auto origin = vtran.to_localworld(absolute);
+            auto dir = spt::vec3d({0.0, 0.0, -1.0});
+            auto ointer = ray_mesh_nearest_intersection(origin, dir, mesh);
+            if (ointer.has_value()) {
+                auto face_id = ointer.value().face_id;
+                viewport.draw_point_grayscale({ax, ay}, intesities[face_id]);
+            }
+        }
+    }
+}
+
+spt::mat3d direct_z_along_vec(spt::mat3d orient, spt::vec3d v) {
+    auto y = spt::cross(v, orient[0]).normalize();
+    auto x = spt::cross(y, v).normalize();
+    v.normalize();
+    return spt::mat3d(x, y, v);
 }
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent), ui(new Ui::MainWindow) {
     ui->setupUi(this);
     for (int i = 0; i < 4; ++i) {
-        scenes[i] = new QGraphicsScene();
+        gscenes[i] = new QGraphicsScene();
     }
 
-    auto set_scene = [](QGraphicsView *view, QGraphicsScene *scene) {
-        view->setScene(scene);
-        view->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-        view->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    auto set_scene = [](QGraphicsView *gview, QGraphicsScene *scene) {
+        gview->setScene(scene);
+        gview->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        gview->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     };
 
-    set_scene(ui->gview0, scenes[0]);
-    set_scene(ui->gview1, scenes[1]);
-    set_scene(ui->gview2, scenes[2]);
-    set_scene(ui->gview3, scenes[3]);
+    set_scene(ui->gview0, gscenes[0]);
+    set_scene(ui->gview1, gscenes[1]);
+    set_scene(ui->gview2, gscenes[2]);
+    set_scene(ui->gview3, gscenes[3]);
 }
 
 MainWindow::~MainWindow() { delete ui; }
 
 void MainWindow::on_render_button_clicked() {
-    QImage image(ui->gview0->size(), QImage::Format_RGB32);
-    image.fill(Qt::white);
-
     Camera cam;
     cam.pos = spt::vec3d({
         ui->campos_x_sbox->value(),
         ui->campos_y_sbox->value(),
         ui->campos_z_sbox->value()
     });
-    cam.orient = spt::mat3d(direct_along_z(
-        spt::mat3d::identity(), spt::vec3d({
+    cam.orient = spt::mat3d(direct_z_along_vec(
+        spt::mat3d::identity(), -spt::vec3d({
             ui->camdir_x_sbox->value(),
             ui->camdir_y_sbox->value(),
             ui->camdir_z_sbox->value()
     })));
-    cam.scale = 100.0;
 
     spt::vec3d lightpos({
-        ui->campos_x_sbox->value(),
-        ui->campos_y_sbox->value(),
-        ui->campos_z_sbox->value()
+        ui->light_x_sbox->value(),
+        ui->light_y_sbox->value(),
+        ui->light_z_sbox->value()
     });
     IllumParams illpars;
     illpars.ia = 1.0;
@@ -388,10 +593,42 @@ void MainWindow::on_render_button_clicked() {
     illpars.kd = illpars.ka;
     PointLight light(lightpos, SimpleIllum(illpars));
 
-    Mesh mesh;
-    //
+    std::vector<Vert> verts{
+        std::array{-1.0, -1.0, 1.0},
+        std::array{1.0, -1.0, 1.0},
+        std::array{1.0, 1.0, 1.0},
+        std::array{-1.0, 1.0, 1.0},
+        std::array{0.0, 0.0, 1.0}
+    };
+    std::vector<Face> faces{
+        {0, 1, 4},
+        {1, 2, 4},
+        {2, 3, 4},
+        {3, 0, 4}
+    };
+    Mesh mesh(verts, faces);
 
-    scenes[0]->clear();
-    scenes[0]->setSceneRect(ui->gview0->rect());
-    scenes[0]->addPixmap(QPixmap::fromImage(image))->setPos(0, 0);
+    Scene scene;
+    scene.cam = cam;
+    scene.light = light;
+    scene.mesh = mesh;
+
+    double pixelsize = 100.0;
+    auto render_and_show = [&scene, pixelsize]
+        (std::function<void(Viewport&, ViewTransformer, const Scene&)> render_fn,
+         QGraphicsView* gview, QGraphicsScene *gscene
+        ) {
+        QImage image(gview->size(), QImage::Format_RGB32);
+        image.fill(Qt::white);
+        Viewport viewport(image);
+        ViewTransformer vtran(viewport, pixelsize);
+        render_fn(viewport, vtran, scene);
+
+        gscene->clear();
+        gscene->setSceneRect(gview->rect());
+        gscene->addPixmap(QPixmap::fromImage(image))->setPos(0, 0);
+    };
+
+    render_and_show(render_full, ui->gview0, gscenes[0]);
+    render_and_show(render_simple, ui->gview1, gscenes[1]);
 }
