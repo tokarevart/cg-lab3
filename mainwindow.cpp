@@ -55,61 +55,28 @@ struct ViewTransformer {
     }
 };
 
-struct IllumParams {
-    double ia, ka, il, kd;
+struct AmbientLight {
+    double ia, ka;
+
+    double intensity() const {
+        return ia * ka;
+    }
 };
 
-class SimpleIllum {
-  public:
-    double compute_intensity(spt::vec3d light, spt::vec3d normal) const {
-        return m_diff_light +
-               m_diff_refl_koef * std::max(0.0, -spt::dot(normal, light));
+struct DiffuseLight {
+    double il, kd;
+
+    double intensity(spt::vec3d light, spt::vec3d normal) const {
+        return il * kd * std::max(0.0, -spt::dot(normal, light));
     }
+};
 
-    void set_params(IllumParams illum) {
-        m_illum = illum;
-        update_diff_light();
-        update_diff_refl_koef();
-    }
+struct SimpleIllum {
+    AmbientLight ambient;
+    DiffuseLight diffuse;
 
-    void set_ia(double ia) {
-        m_illum.ia = ia;
-        update_diff_light();
-    }
-
-    void set_ka(double ka) {
-        m_illum.ka = ka;
-        update_diff_light();
-    }
-
-    void set_il(double il) {
-        m_illum.il = il;
-        update_diff_refl_koef();
-    }
-
-    void set_kd(double kd) {
-        m_illum.kd = kd;
-        update_diff_refl_koef();
-    }
-
-    SimpleIllum() {}
-
-    SimpleIllum(IllumParams illum) : m_illum(illum) {
-        update_diff_light();
-        update_diff_refl_koef();
-    }
-
-  private:
-    IllumParams m_illum;
-    double m_diff_light;
-    double m_diff_refl_koef;
-
-    void update_diff_light() {
-        m_diff_light = m_illum.ia * m_illum.ka;
-    }
-
-    void update_diff_refl_koef() {
-        m_diff_refl_koef = m_illum.il * m_illum.kd;
+    double intensity(spt::vec3d light, spt::vec3d normal) const {
+        return ambient.intensity() + diffuse.intensity(normal, light);
     }
 };
 
@@ -118,7 +85,7 @@ struct PointLight {
     SimpleIllum illum;
 
     double compute_intensity(spt::vec3d at, spt::vec3d normal) const {
-        return illum.compute_intensity((at - this->pos).normalize(), normal);
+        return illum.intensity((at - this->pos).normalize(), normal);
     }
 
     PointLight() {}
@@ -157,9 +124,11 @@ struct Face {
     }
 };
 
+using Surface = std::vector<Face>;
+
 struct Mesh {
     std::vector<Vert> verts;
-    std::vector<Face> faces;
+    Surface surface;
     std::vector<spt::vec3d> normals; // vertex normals
 
     double min_coor(std::size_t c) const {
@@ -196,7 +165,7 @@ struct Mesh {
 
     void update_normals() {
         normals = std::vector(verts.size(), spt::vec3d());
-        for (auto& face : faces) {
+        for (auto& face : surface) {
             auto normal = face_normal(face);
             for (std::size_t vid : face.verts) {
                 normals[vid] += normal;
@@ -208,8 +177,8 @@ struct Mesh {
     }
 
     Mesh() {}
-    Mesh(const std::vector<Vert>& verts, const std::vector<Face>& faces)
-        : verts(verts), faces(faces), normals(verts.size(), spt::vec3d()) {
+    Mesh(const std::vector<Vert>& verts, const Surface& surface)
+        : verts(verts), surface(surface), normals(verts.size(), spt::vec3d()) {
         update_normals();
     }
 };
@@ -228,8 +197,8 @@ std::optional<Inter> ray_mesh_nearest_intersection(
     std::size_t face_id;
     double max_z = std::numeric_limits<double>::lowest();
     bool no_inters = true;
-    for (std::size_t i = 0; i < mesh.faces.size(); ++i) {
-        auto face = mesh.faces[i];
+    for (std::size_t i = 0; i < mesh.surface.size(); ++i) {
+        auto face = mesh.surface[i];
         auto ointer = spt::ray_intersect_triangle(
             origin, dir,
             mesh.verts[face.verts[0]],
@@ -265,8 +234,8 @@ std::optional<Inter> vertray_mesh_nearest_intersection(
     std::size_t face_id;
     double max_z = std::numeric_limits<double>::lowest();
     bool no_inters = true;
-    for (std::size_t i = 0; i < mesh.faces.size(); ++i) {
-        auto face = mesh.faces[i];
+    for (std::size_t i = 0; i < mesh.surface.size(); ++i) {
+        auto face = mesh.surface[i];
         if (face.contains_vert(origin_vert)) {
             continue;
         }
@@ -302,8 +271,8 @@ std::optional<Inter> vertray_mesh_nearest_intersection(
 bool vertray_intersect_mesh(
     std::size_t origin_vert, spt::vec3d dir, const Mesh& mesh) {
 
-    for (std::size_t i = 0; i < mesh.faces.size(); ++i) {
-        auto face = mesh.faces[i];
+    for (std::size_t i = 0; i < mesh.surface.size(); ++i) {
+        auto face = mesh.surface[i];
         if (face.contains_vert(origin_vert)) {
             continue;
         }
@@ -363,25 +332,25 @@ struct LocalScene {
         };
 
         std::vector<Face> vis_faces;
-        for (auto& face : mesh.faces) {
+        for (auto& face : mesh.surface) {
             if (face_visible(face)) {
                 vis_faces.push_back(face);
             }
         }
 
         mesh.verts = std::move(vis_verts);
-        mesh.faces = std::move(vis_faces);
+        mesh.surface = std::move(vis_faces);
     }
 
     // does not remove dangling vertices
     void retain_faces(const std::vector<Face>& faces) {
-        mesh.faces = faces;
+        mesh.surface = faces;
         // ...
     }
 
     void backface_cull() {
         std::vector<Face> filtered;
-        for (auto& face : mesh.faces) {
+        for (auto& face : mesh.surface) {
             if (mesh.face_normal(face)[2] > 0) {
                 filtered.push_back(face);
             }
@@ -463,8 +432,8 @@ void render_simple(Viewport& viewport, ViewTransformer vtran, const Scene& scene
     auto& mesh = locscene.mesh;
     auto& light = locscene.light;
     std::vector<double> intesities;
-    intesities.reserve(mesh.faces.size());
-    for (auto& face : mesh.faces) {
+    intesities.reserve(mesh.surface.size());
+    for (auto& face : mesh.surface) {
         auto center = mesh.face_center(face);
         auto normal = mesh.face_normal(face);
         double intensity = light.compute_intensity(center, normal);
@@ -578,7 +547,7 @@ void render_gouraud(Viewport& viewport, ViewTransformer vtran, const Scene& scen
     int min_y = vtran.to_viewport(std::array{0.0, mesh.max_coor(1)})[1];
     int max_y = vtran.to_viewport(std::array{0.0, mesh.min_coor(1)})[1] + 1;
     for (int ay = min_y; ay < max_y; ++ay) {
-        for (auto& face : mesh.faces) {
+        for (auto& face : mesh.surface) {
             double world_y = vtran.to_localworld(spt::vec2d({0.0, static_cast<double>(ay)}))[1];
             auto oxinters = triangle_horizline_intersections(mesh, face, world_y);
             if (!oxinters.has_value()) {
@@ -657,12 +626,13 @@ void MainWindow::on_render_button_clicked() {
         ui->light_y_sbox->value(),
         ui->light_z_sbox->value()
     });
-    IllumParams illpars;
-    illpars.ia = 1.0;
-    illpars.il = 10.0;
-    illpars.ka = 0.15;
-    illpars.kd = illpars.ka;
-    PointLight light(lightpos, SimpleIllum(illpars));
+    AmbientLight ambient;
+    ambient.ia = 1.0;
+    ambient.ka = 0.15;
+    DiffuseLight diffuse;
+    diffuse.il = 10.0;
+    diffuse.kd = ambient.ka;
+    PointLight light(lightpos, SimpleIllum{ambient, diffuse});
 
     std::vector<Vert> verts{
         std::array{-1.0, -1.0, 1.0},
@@ -671,13 +641,13 @@ void MainWindow::on_render_button_clicked() {
         std::array{-1.0, 1.0, 1.0},
         std::array{0.0, 0.0, 1.0}
     };
-    std::vector<Face> faces{
+    Surface surface{
         {0, 1, 4},
         {1, 2, 4},
         {2, 3, 4},
         {3, 0, 4}
     };
-    Mesh mesh(verts, faces);
+    Mesh mesh(verts, surface);
 
     Scene scene;
     scene.cam = cam;
