@@ -6,8 +6,8 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>712</width>
-    <height>753</height>
+    <width>646</width>
+    <height>788</height>
    </rect>
   </property>
   <property name="sizePolicy">
@@ -26,8 +26,15 @@
      <verstretch>0</verstretch>
     </sizepolicy>
    </property>
-   <layout class="QVBoxLayout" name="verticalLayout">
-    <item>
+   <layout class="QGridLayout" name="gridLayout">
+    <item row="3" column="0">
+     <widget class="QPushButton" name="render_button">
+      <property name="text">
+       <string>Render</string>
+      </property>
+     </widget>
+    </item>
+    <item row="0" column="0">
      <layout class="QHBoxLayout" name="campos_layout">
       <item>
        <widget class="QLabel" name="campos_label">
@@ -86,7 +93,79 @@
       </item>
      </layout>
     </item>
-    <item>
+    <item row="4" column="0">
+     <layout class="QGridLayout" name="gviews">
+      <item row="1" column="0">
+       <layout class="QVBoxLayout" name="gview_layout2">
+        <item>
+         <widget class="QLabel" name="gview2_label">
+          <property name="text">
+           <string>Gouraud</string>
+          </property>
+          <property name="alignment">
+           <set>Qt::AlignCenter</set>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QGraphicsView" name="gview2"/>
+        </item>
+       </layout>
+      </item>
+      <item row="0" column="1">
+       <layout class="QVBoxLayout" name="gview_layout1">
+        <item>
+         <widget class="QLabel" name="gview1_label">
+          <property name="text">
+           <string>Simple</string>
+          </property>
+          <property name="alignment">
+           <set>Qt::AlignCenter</set>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QGraphicsView" name="gview1"/>
+        </item>
+       </layout>
+      </item>
+      <item row="1" column="1">
+       <layout class="QVBoxLayout" name="gview_layout3">
+        <item>
+         <widget class="QLabel" name="gview3_label">
+          <property name="text">
+           <string>Phong</string>
+          </property>
+          <property name="alignment">
+           <set>Qt::AlignCenter</set>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QGraphicsView" name="gview3"/>
+        </item>
+       </layout>
+      </item>
+      <item row="0" column="0">
+       <layout class="QVBoxLayout" name="gview_layout0">
+        <item>
+         <widget class="QLabel" name="gview0_label">
+          <property name="text">
+           <string>Full</string>
+          </property>
+          <property name="alignment">
+           <set>Qt::AlignCenter</set>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QGraphicsView" name="gview0"/>
+        </item>
+       </layout>
+      </item>
+     </layout>
+    </item>
+    <item row="1" column="0">
      <layout class="QHBoxLayout" name="camdir_layout">
       <item>
        <widget class="QLabel" name="camdir_label">
@@ -145,7 +224,7 @@
       </item>
      </layout>
     </item>
-    <item>
+    <item row="2" column="0">
      <layout class="QHBoxLayout" name="light_layout">
       <item>
        <widget class="QLabel" name="light_label">
@@ -204,29 +283,6 @@
       </item>
      </layout>
     </item>
-    <item>
-     <widget class="QPushButton" name="render_button">
-      <property name="text">
-       <string>Render</string>
-      </property>
-     </widget>
-    </item>
-    <item>
-     <layout class="QGridLayout" name="gviews">
-      <item row="1" column="0">
-       <widget class="QGraphicsView" name="gview2"/>
-      </item>
-      <item row="0" column="0">
-       <widget class="QGraphicsView" name="gview0"/>
-      </item>
-      <item row="1" column="1">
-       <widget class="QGraphicsView" name="gview3"/>
-      </item>
-      <item row="0" column="1">
-       <widget class="QGraphicsView" name="gview1"/>
-      </item>
-     </layout>
-    </item>
    </layout>
   </widget>
   <widget class="QMenuBar" name="menubar">
@@ -234,7 +290,7 @@
     <rect>
      <x>0</x>
      <y>0</y>
-     <width>712</width>
+     <width>646</width>
      <height>20</height>
     </rect>
    </property>

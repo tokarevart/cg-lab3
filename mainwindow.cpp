@@ -7,105 +7,6 @@
 
 #include "ui_mainwindow.h"
 
-int det(QPoint col0, QPoint col1) {
-    return col0.x() * col1.y() - col0.y() * col1.x();
-}
-
-std::optional<QPointF> segm_line_intersection(QLine s, QLine l) {
-    QPoint p0 = s.p1();
-    QPoint p1 = s.p2();
-    QPoint q0 = l.p1();
-    QPoint q1 = l.p2();
-    QPoint p1_p0 = p1 - p0;
-    QPoint q1_q0 = q1 - q0;
-    int d = det(q1_q0, -p1_p0);
-    if (d == 0) {
-        return std::nullopt;
-    }
-
-    QPoint p0_q0 = p0 - q0;
-    int d1 = det(q1_q0, p0_q0);
-    if (d * d1 < 0 || std::abs(d1) > std::abs(d)) {
-        return std::nullopt;
-    }
-
-    double t = static_cast<double>(d1) / d;
-    return QPointF(p0) + t * QPointF(p1_p0);
-}
-
-QLine horiz_line(int y) {
-    return {QPoint(0, y), QPoint(1, y)};
-}
-
-std::optional<QPointF> segm_horizline_intersection(QLine s, int y) {
-    int p0y = s.p1().y();
-    int p1y = s.p2().y();
-    if (p0y == p1y) {
-        return std::nullopt;
-    }
-    double t = static_cast<double>(y - p0y) / (p1y - p0y);
-    if (t < 0.0 || t > 1) {
-        return std::nullopt;
-    } else {
-        return QPointF(s.p1()) + t * QPointF(s.p2() - s.p1());
-    }
-}
-
-QList<double> polygon_horiz_intersections(const QList<QLine> &edges, int y) {
-//    auto horizlile = horiz_line(y);
-    QList<double> res;
-    res.reserve(2);
-    auto prev_edge = edges.last();
-    for (int i = 0; i < edges.size(); ++i) {
-        auto cur_edge = edges[i];
-//        auto ointer = segm_line_intersection(cur_edge, horizlile);
-        auto ointer = segm_horizline_intersection(cur_edge, y);
-        if (ointer.has_value()) {
-            if (cur_edge.p1().y() == y) {
-                auto p0 = prev_edge.p1();
-                auto p1 = cur_edge.p1();
-                auto p2 = cur_edge.p2();
-                if ((p1.y() - p0.y()) * (p2.y() - p1.y()) <= 0) {
-                    res.push_back(ointer.value().x());
-                }
-            } else {
-                res.push_back(ointer.value().x());
-            }
-        }
-        prev_edge = cur_edge;
-    }
-    std::sort(res.begin(), res.end());
-    return res;
-}
-
-void draw_polygon(
-    QImage &image, const QPolygon &poly, std::function<QRgb()> rgb) {
-
-    QList<QLine> edges;
-    edges.reserve(poly.size());
-    edges.push_back(QLine(poly.last(), poly.first()));
-    for (int i = 1; i < poly.size(); ++i) {
-        edges.push_back(QLine(poly[i - 1], poly[i]));
-    }
-
-    QRgb *bits = reinterpret_cast<QRgb *>(image.bits());
-    QRect brect = poly.boundingRect();
-    for (int y = brect.top(); y < brect.bottom(); ++y) {
-        auto xinters = polygon_horiz_intersections(edges, y);
-        for (int i = 0; i < xinters.size(); i += 2) {
-            int xbeg = std::max(static_cast<int>(xinters[i]), 0);
-            int xend = std::min(
-                static_cast<int>(xinters[i + 1]) + 1,
-                image.width()
-            );
-            int start = y * image.width();
-            for (int x = xbeg; x < xend; ++x) {
-                bits[start + x] = rgb();
-            }
-        }
-    }
-}
-
 struct Viewport {
     QImage* image;
 
@@ -139,6 +40,7 @@ struct ViewTransformer {
     }
 
     spt::vec2i to_viewport(spt::vec2d pos) const {
+        pos[1] = -pos[1];
         auto scaled = pos * pixelsize;
         return spt::vec2i(scaled + image_center);
     }
@@ -231,11 +133,12 @@ struct Camera {
 };
 
 using Vert = spt::vec3d;
+using Edge = std::array<std::size_t, 2>;
 
 struct Face {
     std::array<std::size_t, 3> verts;
 
-    std::array<std::size_t, 2> edge(std::size_t i) const {
+    Edge edge(std::size_t i) const {
         if (i < 2) {
             return {verts[i], verts[i + 1]};
         } else {
@@ -252,21 +155,32 @@ struct Face {
             return false;
         }
     }
-
-    bool contains_any_vert(const std::vector<std::size_t>& verts_ids) const {
-        for (std::size_t id : verts_ids) {
-            if (contains_vert(id)) {
-                return true;
-            }
-        }
-        return false;
-    }
 };
 
 struct Mesh {
     std::vector<Vert> verts;
     std::vector<Face> faces;
     std::vector<spt::vec3d> normals; // vertex normals
+
+    double min_coor(std::size_t c) const {
+        double minc = std::numeric_limits<double>::max();
+        for (auto& v : verts) {
+            if (v[c] < minc) {
+                minc = v[c];
+            }
+        }
+        return minc;
+    }
+
+    double max_coor(std::size_t c) const {
+        double maxc = std::numeric_limits<double>::lowest();
+        for (auto& v : verts) {
+            if (v[c] > maxc) {
+                maxc = v[c];
+            }
+        }
+        return maxc;
+    }
 
     spt::vec3d face_normal(const Face& face) const {
         auto edgevec0 = verts[face.verts[1]] - verts[face.verts[0]];
@@ -282,17 +196,14 @@ struct Mesh {
 
     void update_normals() {
         normals = std::vector(verts.size(), spt::vec3d());
-        std::vector<std::size_t> counts(verts.size(), 0);
         for (auto& face : faces) {
             auto normal = face_normal(face);
             for (std::size_t vid : face.verts) {
                 normals[vid] += normal;
-                ++counts[vid]; // maybe just normalize at the end instead of averaging?
             }
         }
-        for (std::size_t i = 0; i < normals.size(); ++i) {
-            double inv_count = 1.0 / counts[i];
-            normals[i] *= inv_count;
+        for (auto& normal : normals) {
+            normal.normalize();
         }
     }
 
@@ -421,25 +332,7 @@ struct LocalScene {
     PointLight light;
     Mesh mesh;
 
-    void backface_cull() {
-        std::vector<Face> filtered;
-        for (auto& face : mesh.faces) {
-            if (mesh.face_normal(face)[2] > 0) {
-                filtered.push_back(face);
-            }
-        }
-        mesh.faces = std::move(filtered);
-    }
-
-    // does not view frustum
-    void occlusion_cull() {
-        std::vector<std::size_t> invis_verts;
-        spt::vec3d backward({0.0, 0.0, 1.0});
-        for (std::size_t i = 0; i < mesh.verts.size(); ++i) {
-            if (vertray_intersect_mesh(i, backward, mesh)) {
-                invis_verts.push_back(i);
-            }
-        }
+    void remove_invisible_verts(const std::vector<std::size_t>& invis_verts) {
         if (invis_verts.empty()) {
             return;
         }
@@ -480,7 +373,55 @@ struct LocalScene {
         mesh.faces = std::move(vis_faces);
     }
 
-//    void view_frustum(ViewTransformer vtran) { }
+    // does not remove dangling vertices
+    void retain_faces(const std::vector<Face>& faces) {
+        mesh.faces = faces;
+        // ...
+    }
+
+    void backface_cull() {
+        std::vector<Face> filtered;
+        for (auto& face : mesh.faces) {
+            if (mesh.face_normal(face)[2] > 0) {
+                filtered.push_back(face);
+            }
+        }
+        retain_faces(filtered);
+    }
+
+    // does not view frustum, only removes items hidden behind other items
+    void occlusion_cull() {
+        std::vector<std::size_t> invis_verts;
+        spt::vec3d backward({0.0, 0.0, 1.0});
+        for (std::size_t i = 0; i < mesh.verts.size(); ++i) {
+            if (vertray_intersect_mesh(i, backward, mesh)) {
+                invis_verts.push_back(i);
+            }
+        }
+        remove_invisible_verts(invis_verts);
+    }
+
+    void view_frustum(ViewTransformer vtran) {
+        std::vector<std::size_t> invis_verts;
+        double upper_x = vtran.to_localworld(spt::vec2i({vtran.viewport->width(), 0}))[0];
+        double lower_x = vtran.to_localworld(spt::vec2i({0, 0}))[0];
+        double upper_y = vtran.to_localworld(spt::vec2i({0, 0}))[1];
+        double lower_y = vtran.to_localworld(spt::vec2i({0, vtran.viewport->height()}))[1];
+        for (std::size_t i = 0; i < mesh.verts.size(); ++i) {
+            double x = mesh.verts[i][0];
+            double y = mesh.verts[i][1];
+            double z = mesh.verts[i][2];
+            auto inside = [](double l, double c, double u) {
+                return c > l && c < u;
+            };
+            if ( z > 0 ||
+                !inside(lower_x, x, upper_x) ||
+                !inside(lower_y, y, upper_y)) {
+                invis_verts.push_back(i);
+            }
+        }
+        remove_invisible_verts(invis_verts);
+    }
 
     LocalScene(Scene scene) : light(scene.light), mesh(scene.mesh) {
         auto campos = scene.cam.pos;
@@ -497,15 +438,19 @@ struct LocalScene {
 
 void render_full(Viewport& viewport, ViewTransformer vtran, const Scene& scene) {
     LocalScene locscene(scene);
-    for (int ay = 0; ay < viewport.height(); ++ay) {
+    auto& mesh = locscene.mesh;
+    auto& light = locscene.light;
+    int min_y = vtran.to_viewport(std::array{0.0, mesh.max_coor(1)})[1];
+    int max_y = vtran.to_viewport(std::array{0.0, mesh.min_coor(1)})[1] + 1;
+    for (int ay = min_y; ay < max_y; ++ay) {
         for (int ax = 0; ax < viewport.width(); ++ax) {
             spt::vec2i absolute({ax, ay});
             auto origin = vtran.to_localworld(absolute);
             auto dir = spt::vec3d({0.0, 0.0, -1.0});
-            auto ointer = ray_mesh_nearest_intersection(origin, dir, locscene.mesh);
+            auto ointer = ray_mesh_nearest_intersection(origin, dir, mesh);
             if (ointer.has_value()) {
                 auto inter = ointer.value();
-                double intensity = locscene.light.compute_intensity(inter.at, inter.normal);
+                double intensity = light.compute_intensity(inter.at, inter.normal);
                 viewport.draw_point_grayscale({ax, ay}, intensity);
             }
         }
@@ -525,7 +470,9 @@ void render_simple(Viewport& viewport, ViewTransformer vtran, const Scene& scene
         intesities.push_back(intensity);
     }
 
-    for (int ay = 0; ay < viewport.height(); ++ay) {
+    int min_y = vtran.to_viewport(std::array{0.0, mesh.max_coor(1)})[1];
+    int max_y = vtran.to_viewport(std::array{0.0, mesh.min_coor(1)})[1] + 1;
+    for (int ay = min_y; ay < max_y; ++ay) {
         for (int ax = 0; ax < viewport.width(); ++ax) {
             spt::vec2i absolute({ax, ay});
             auto origin = vtran.to_localworld(absolute);
@@ -534,6 +481,129 @@ void render_simple(Viewport& viewport, ViewTransformer vtran, const Scene& scene
             if (ointer.has_value()) {
                 auto face_id = ointer.value().face_id;
                 viewport.draw_point_grayscale({ax, ay}, intesities[face_id]);
+            }
+        }
+    }
+}
+
+std::optional<spt::vec2d> segm_horizline_intersection(
+    const std::array<spt::vec2d, 2> pts, double y
+) {
+    double p0y = pts[0][1];
+    double p1y = pts[1][1];
+    double maxabsy = std::max(std::abs(p0y), std::abs(p1y));
+    double scaled_eps = std::numeric_limits<double>::epsilon() * maxabsy;
+    if (std::abs(p0y - p1y) <= scaled_eps) {
+        return std::nullopt;
+    }
+    double t = static_cast<double>(y - p0y) / (p1y - p0y);
+    if (t < 0.0 || t > 1.0) {
+        return std::nullopt;
+    } else {
+        return pts[0] + t * (pts[1] - pts[0]);
+    }
+}
+
+struct EdgeInter {
+    spt::vec2d p;
+    Edge edge;
+};
+
+std::optional<std::array<EdgeInter, 2>> triangle_horizline_intersections(
+    const Mesh& mesh, const Face& face, double y
+) {
+    std::array<spt::vec2d, 2> pres;
+    std::array<Edge, 2> eres;
+    std::size_t res_i = 0;
+    std::size_t prev = face.verts[2];
+    auto prevpos = spt::vec2d(mesh.verts[prev]);
+    for (int i = 0; i < 3; ++i) {
+        std::size_t cur = face.verts[i];
+        auto curpos = spt::vec2d(mesh.verts[cur]);
+        auto ointer = segm_horizline_intersection({prevpos, curpos}, y);
+        if (ointer.has_value()) {
+            if (curpos[1] == y) {
+                std::size_t next = face.verts[0];
+                if (i < 2) {
+                    next = face.verts[i + 1];
+                }
+                auto nextpos = spt::vec2d(mesh.verts[next]);
+                if ((curpos[1] - prevpos[1]) * (nextpos[1] - curpos[1]) < 0) {
+                    pres[res_i] = ointer.value();
+                    eres[res_i] = { prev, cur };
+                    if (++res_i == 2) {
+                        break;
+                    }
+                }
+            } else {
+                pres[res_i] = ointer.value();
+                eres[res_i] = { prev, cur };
+                if (++res_i == 2) {
+                    break;
+                }
+            }
+        }
+        prev = cur;
+        prevpos = curpos;
+    }
+    if (res_i < 2) {
+        return std::nullopt;
+    }
+
+    if (pres[0][0] > pres[1][0]) {
+        std::swap(pres[0], pres[1]);
+        std::swap(eres[0], eres[1]);
+    }
+    return std::array{
+        EdgeInter{ pres[0], eres[0] },
+        EdgeInter{ pres[1], eres[1] }
+    };
+}
+
+void render_gouraud(Viewport& viewport, ViewTransformer vtran, const Scene& scene) {
+    LocalScene locscene(scene);
+    locscene.occlusion_cull();
+    locscene.view_frustum(vtran);
+
+    auto& mesh = locscene.mesh;
+    auto& light = locscene.light;
+    std::vector<double> verts_intens;
+    verts_intens.reserve(mesh.verts.size());
+    for (std::size_t i = 0; i < mesh.verts.size(); ++i) {
+        double inten = light.compute_intensity(mesh.verts[i], mesh.normals[i]);
+        verts_intens.push_back(inten);
+    }
+
+    int min_y = vtran.to_viewport(std::array{0.0, mesh.max_coor(1)})[1];
+    int max_y = vtran.to_viewport(std::array{0.0, mesh.min_coor(1)})[1] + 1;
+    for (int ay = min_y; ay < max_y; ++ay) {
+        for (auto& face : mesh.faces) {
+            double world_y = vtran.to_localworld(spt::vec2d({0.0, static_cast<double>(ay)}))[1];
+            auto oxinters = triangle_horizline_intersections(mesh, face, world_y);
+            if (!oxinters.has_value()) {
+                continue;
+            }
+            auto xinters = oxinters.value();
+
+            std::array<double, 2> intens;
+            for (std::size_t i = 0; i < 2; ++i) {
+                auto edge = xinters[i].edge;
+                double inten_v0 = verts_intens[edge[0]];
+                double inten_v1 = verts_intens[edge[1]];
+
+                auto p = xinters[i].p;
+                auto p0 = spt::vec2d(mesh.verts[edge[0]]);
+                auto p1 = spt::vec2d(mesh.verts[edge[1]]);
+
+                double t = std::sqrt((p - p0).magnitude2() / (p1 - p0).magnitude2());
+                intens[i] = inten_v0 + t * (inten_v1 - inten_v0);
+            }
+
+            int xbeg = std::max(static_cast<int>(vtran.to_viewport(xinters[0].p)[0]), 0);
+            int xend = std::min(static_cast<int>(vtran.to_viewport(xinters[1].p)[0]) + 1, viewport.width());
+            double delta_inten = (intens[1] - intens[0]) / xend;
+            for (int ax = xbeg; ax < xend; ++ax) {
+                viewport.draw_point_grayscale({ax, ay}, intens[0] + ax * delta_inten);
             }
         }
     }
@@ -631,4 +701,5 @@ void MainWindow::on_render_button_clicked() {
 
     render_and_show(render_full, ui->gview0, gscenes[0]);
     render_and_show(render_simple, ui->gview1, gscenes[1]);
+    render_and_show(render_gouraud, ui->gview2, gscenes[2]);
 }

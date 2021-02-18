@@ -101,28 +101,6 @@ vec<3, Real> project_on_plane(
     return plane_p0 + project_on_plane(point - plane_p0, plane_p1 - plane_p0, plane_p2 - plane_p0);
 }
 
-template <typename Int, typename Real>
-std::optional<vec<2, Real>> segm_intersect_line_int(
-    const vec<2, Int>& segm_p0, const vec<2, Int>& segm_p1,
-    const vec<2, Int>& line_p0, const vec<2, Int>& line_p1) {
-
-    auto p1_p0 = segm_p1 - segm_p0;
-    auto q1_q0 = line_p1 - line_p0;
-    Int d = spt::det(q1_q0, -p1_p0);
-    if (d == 0) {
-        return std::nullopt;
-    }
-
-    auto p0_q0 = segm_p0 - line_p0;
-    Int d1 = spt::det(q1_q0, p0_q0);
-    if (d * d1 < 0 || std::abs(d1) > std::abs(d)) {
-        return std::nullopt;
-    }
-
-    Real t = static_cast<Real>(d1) / d;
-    return segm_p0 + t * p1_p0;
-}
-
 template <typename Real>
 std::optional<vec<2, Real>> segm_intersect_line(
     const vec<2, Real>& segm_p0, const vec<2, Real>& segm_p1,

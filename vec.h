@@ -149,10 +149,11 @@ struct vec {
     vec() {
         std::fill(x.begin(), x.end(), static_cast<ValueType>(0));
     }
-    template <typename FromValueType>
-    vec(const vec<Dim, FromValueType>& other) {
-        for (std::size_t i = 0; i < Dim; ++i)
+    template <std::size_t FromDim, typename FromValueType>
+    vec(const vec<FromDim, FromValueType>& other) {
+        for (std::size_t i = 0; i < Dim; ++i){
             x[i] = static_cast<ValueType>(other.x[i]);
+        }
     }
     vec(const vec& other) {
         x = other.x;
