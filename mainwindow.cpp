@@ -389,20 +389,16 @@ struct LocalScene {
         retain_faces(filtered);
     }
 
-    // does not view frustum, only removes items hidden behind other items
-    void occlusion_cull() {
+    void occlusion_cull(ViewTransformer vtran) {
         std::vector<std::size_t> invis_verts;
+
         spt::vec3d backward({0.0, 0.0, 1.0});
         for (std::size_t i = 0; i < mesh.verts.size(); ++i) {
             if (vertray_intersect_mesh(i, backward, mesh)) {
                 invis_verts.push_back(i);
             }
         }
-        remove_invisible_verts(invis_verts);
-    }
 
-    void view_frustum(ViewTransformer vtran) {
-        std::vector<std::size_t> invis_verts;
         double upper_x = vtran.to_localworld(spt::vec2i({vtran.viewport->width(), 0}))[0];
         double lower_x = vtran.to_localworld(spt::vec2i({0, 0}))[0];
         double upper_y = vtran.to_localworld(spt::vec2i({0, 0}))[1];
@@ -420,6 +416,7 @@ struct LocalScene {
                 invis_verts.push_back(i);
             }
         }
+
         remove_invisible_verts(invis_verts);
     }
 
@@ -438,6 +435,8 @@ struct LocalScene {
 
 void render_full(Viewport& viewport, ViewTransformer vtran, const Scene& scene) {
     LocalScene locscene(scene);
+    locscene.backface_cull();
+    locscene.occlusion_cull(vtran);
     auto& mesh = locscene.mesh;
     auto& light = locscene.light;
     int min_y = vtran.to_viewport(std::array{0.0, mesh.max_coor(1)})[1];
@@ -459,6 +458,8 @@ void render_full(Viewport& viewport, ViewTransformer vtran, const Scene& scene) 
 
 void render_simple(Viewport& viewport, ViewTransformer vtran, const Scene& scene) {
     LocalScene locscene(scene);
+    locscene.backface_cull();
+    locscene.occlusion_cull(vtran);
     auto& mesh = locscene.mesh;
     auto& light = locscene.light;
     std::vector<double> intesities;
@@ -562,8 +563,8 @@ std::optional<std::array<EdgeInter, 2>> triangle_horizline_intersections(
 
 void render_gouraud(Viewport& viewport, ViewTransformer vtran, const Scene& scene) {
     LocalScene locscene(scene);
-    locscene.occlusion_cull();
-    locscene.view_frustum(vtran);
+    locscene.backface_cull();
+    locscene.occlusion_cull(vtran);
 
     auto& mesh = locscene.mesh;
     auto& light = locscene.light;
