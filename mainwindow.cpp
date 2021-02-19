@@ -71,12 +71,37 @@ struct DiffuseLight {
     }
 };
 
+struct PhongLight {
+    double il, ks, n;
+
+    double intensity(spt::vec3d light, spt::vec3d normal, spt::vec3d camdir) const {
+        auto proj = spt::dot(light, normal) * normal;
+        auto refl = light - proj - proj;
+        return il * ks * std::max(0.0, std::pow(-spt::dot(refl, camdir), n));
+    }
+
+    double local_intensity(spt::vec3d light, spt::vec3d normal) const {
+        auto projz = spt::dot(light, normal) * normal[2];
+        auto reflz = light[2] - projz - projz;
+        return il * ks * std::max(0.0, std::pow(reflz, n));
+    }
+};
+
 struct SimpleIllum {
     AmbientLight ambient;
     DiffuseLight diffuse;
+    PhongLight phong;
 
-    double intensity(spt::vec3d light, spt::vec3d normal) const {
-        return ambient.intensity() + diffuse.intensity(normal, light);
+    double intensity(spt::vec3d light, spt::vec3d normal, spt::vec3d camdir) const {
+        return ambient.intensity()
+               + diffuse.intensity(normal, light)
+               + phong.intensity(light, normal, camdir);
+    }
+
+    double local_intensity(spt::vec3d light, spt::vec3d normal) const {
+        return ambient.intensity()
+               + diffuse.intensity(normal, light)
+               + phong.local_intensity(light, normal);
     }
 };
 
@@ -84,8 +109,12 @@ struct PointLight {
     spt::vec3d pos;
     SimpleIllum illum;
 
-    double compute_intensity(spt::vec3d at, spt::vec3d normal) const {
-        return illum.intensity((at - this->pos).normalize(), normal);
+    double intensity(spt::vec3d at, spt::vec3d normal, spt::vec3d camdir) const {
+        return illum.intensity((at - this->pos).normalize(), normal, camdir);
+    }
+
+    double local_intensity(spt::vec3d at, spt::vec3d normal) const {
+        return illum.local_intensity((at - this->pos).normalize(), normal);
     }
 
     PointLight() {}
@@ -301,30 +330,29 @@ struct LocalScene {
     PointLight light;
     Mesh mesh;
 
-    void remove_invisible_verts(const std::vector<std::size_t>& invis_verts) {
+    void remove_invisible_faces(const std::vector<std::size_t>& invis_verts) {
         if (invis_verts.empty()) {
             return;
         }
 
-        std::vector<Vert> vis_verts;
-        std::vector<std::size_t> vis_verts_ids;
+        std::vector<std::size_t> vis_verts;
         vis_verts.reserve(mesh.verts.size() - invis_verts.size());
         std::size_t cur_ivert_i = 0;
         for (std::size_t i = 0; i < mesh.verts.size(); ++i) {
-            if (i == invis_verts[cur_ivert_i]) {
+            if (cur_ivert_i < invis_verts.size()
+                && i == invis_verts[cur_ivert_i]) {
                 ++cur_ivert_i;
             } else {
-                vis_verts.push_back(mesh.verts[i]);
-                vis_verts_ids.push_back(i);
+                vis_verts.push_back(i);
             }
         }
 
-        auto face_visible = [&vis_verts_ids](const Face& face) {
+        auto face_visible = [&vis_verts](const Face& face) {
             for (std::size_t vert_id : face.verts) {
                 if (std::find(
-                        vis_verts_ids.begin(),
-                        vis_verts_ids.end(),
-                        vert_id) != vis_verts_ids.end()) {
+                        vis_verts.begin(),
+                        vis_verts.end(),
+                        vert_id) != vis_verts.end()) {
                     return true;
                 }
             }
@@ -338,15 +366,14 @@ struct LocalScene {
             }
         }
 
-        mesh.verts = std::move(vis_verts);
         mesh.surface = std::move(vis_faces);
     }
 
     // does not remove dangling vertices
-    void retain_faces(const std::vector<Face>& faces) {
-        mesh.surface = faces;
-        // ...
-    }
+//    void retain_faces(const std::vector<Face>& faces) {
+//        mesh.surface = faces;
+//        // ...
+//    }
 
     void backface_cull() {
         std::vector<Face> filtered;
@@ -355,7 +382,7 @@ struct LocalScene {
                 filtered.push_back(face);
             }
         }
-        retain_faces(filtered);
+        mesh.surface = std::move(filtered);
     }
 
     void occlusion_cull(ViewTransformer vtran) {
@@ -370,8 +397,8 @@ struct LocalScene {
 
         double upper_x = vtran.to_localworld(spt::vec2i({vtran.viewport->width(), 0}))[0];
         double lower_x = vtran.to_localworld(spt::vec2i({0, 0}))[0];
-        double upper_y = vtran.to_localworld(spt::vec2i({0, 0}))[1];
-        double lower_y = vtran.to_localworld(spt::vec2i({0, vtran.viewport->height()}))[1];
+        double upper_y = vtran.to_localworld(spt::vec2i({0, -1}))[1];
+        double lower_y = vtran.to_localworld(spt::vec2i({0, vtran.viewport->height() - 1}))[1];
         for (std::size_t i = 0; i < mesh.verts.size(); ++i) {
             double x = mesh.verts[i][0];
             double y = mesh.verts[i][1];
@@ -386,7 +413,8 @@ struct LocalScene {
             }
         }
 
-        remove_invisible_verts(invis_verts);
+        std::sort(invis_verts.begin(), invis_verts.end());
+        remove_invisible_faces(invis_verts);
     }
 
     LocalScene(Scene scene) : light(scene.light), mesh(scene.mesh) {
@@ -402,15 +430,29 @@ struct LocalScene {
     }
 };
 
+std::array<int, 2> min_max_image_y(
+    const Viewport& viewport, ViewTransformer vtran, const Mesh& mesh) {
+
+    int min_y = std::max(
+        0, static_cast<int>(
+               vtran.to_viewport(
+                   std::array{0.0, mesh.max_coor(1)})[1]));
+    int max_y = std::min(
+        static_cast<int>(
+            vtran.to_viewport(
+                std::array{0.0, mesh.min_coor(1)})[1] + 1),
+        viewport.height());
+    return { min_y, max_y };
+}
+
 void render_full(Viewport& viewport, ViewTransformer vtran, const Scene& scene) {
     LocalScene locscene(scene);
     locscene.backface_cull();
     locscene.occlusion_cull(vtran);
     auto& mesh = locscene.mesh;
     auto& light = locscene.light;
-    int min_y = vtran.to_viewport(std::array{0.0, mesh.max_coor(1)})[1];
-    int max_y = vtran.to_viewport(std::array{0.0, mesh.min_coor(1)})[1] + 1;
-    for (int ay = min_y; ay < max_y; ++ay) {
+    auto minmax_y = min_max_image_y(viewport, vtran, mesh);
+    for (int ay = minmax_y[0]; ay < minmax_y[1]; ++ay) {
         for (int ax = 0; ax < viewport.width(); ++ax) {
             spt::vec2i absolute({ax, ay});
             auto origin = vtran.to_localworld(absolute);
@@ -418,7 +460,7 @@ void render_full(Viewport& viewport, ViewTransformer vtran, const Scene& scene) 
             auto ointer = ray_mesh_nearest_intersection(origin, dir, mesh);
             if (ointer.has_value()) {
                 auto inter = ointer.value();
-                double intensity = light.compute_intensity(inter.at, inter.normal);
+                double intensity = light.local_intensity(inter.at, inter.normal);
                 viewport.draw_point_grayscale({ax, ay}, intensity);
             }
         }
@@ -436,13 +478,12 @@ void render_simple(Viewport& viewport, ViewTransformer vtran, const Scene& scene
     for (auto& face : mesh.surface) {
         auto center = mesh.face_center(face);
         auto normal = mesh.face_normal(face);
-        double intensity = light.compute_intensity(center, normal);
+        double intensity = light.local_intensity(center, normal);
         intesities.push_back(intensity);
     }
 
-    int min_y = vtran.to_viewport(std::array{0.0, mesh.max_coor(1)})[1];
-    int max_y = vtran.to_viewport(std::array{0.0, mesh.min_coor(1)})[1] + 1;
-    for (int ay = min_y; ay < max_y; ++ay) {
+    auto minmax_y = min_max_image_y(viewport, vtran, mesh);
+    for (int ay = minmax_y[0]; ay < minmax_y[1]; ++ay) {
         for (int ax = 0; ax < viewport.width(); ++ax) {
             spt::vec2i absolute({ax, ay});
             auto origin = vtran.to_localworld(absolute);
@@ -540,13 +581,12 @@ void render_gouraud(Viewport& viewport, ViewTransformer vtran, const Scene& scen
     std::vector<double> verts_intens;
     verts_intens.reserve(mesh.verts.size());
     for (std::size_t i = 0; i < mesh.verts.size(); ++i) {
-        double inten = light.compute_intensity(mesh.verts[i], mesh.normals[i]);
+        double inten = light.local_intensity(mesh.verts[i], mesh.normals[i]);
         verts_intens.push_back(inten);
     }
 
-    int min_y = vtran.to_viewport(std::array{0.0, mesh.max_coor(1)})[1];
-    int max_y = vtran.to_viewport(std::array{0.0, mesh.min_coor(1)})[1] + 1;
-    for (int ay = min_y; ay < max_y; ++ay) {
+    auto minmax_y = min_max_image_y(viewport, vtran, mesh);
+    for (int ay = minmax_y[0]; ay < minmax_y[1]; ++ay) {
         for (auto& face : mesh.surface) {
             double world_y = vtran.to_localworld(spt::vec2d({0.0, static_cast<double>(ay)}))[1];
             auto oxinters = triangle_horizline_intersections(mesh, face, world_y);
@@ -626,13 +666,23 @@ void MainWindow::on_render_button_clicked() {
         ui->light_y_sbox->value(),
         ui->light_z_sbox->value()
     });
+    double ia = 1.0;
+    double ka = 0.15;
+    double il = 10.0;
+    double kd = ka;
+    double ks = 0.8;
+    double n = 5.0;
     AmbientLight ambient;
-    ambient.ia = 1.0;
-    ambient.ka = 0.15;
+    ambient.ia = ia;
+    ambient.ka = ka;
     DiffuseLight diffuse;
-    diffuse.il = 10.0;
-    diffuse.kd = ambient.ka;
-    PointLight light(lightpos, SimpleIllum{ambient, diffuse});
+    diffuse.il = il;
+    diffuse.kd = kd;
+    PhongLight phong;
+    phong.il = il;
+    phong.ks = ks;
+    phong.n = n;
+    PointLight light(lightpos, SimpleIllum{ambient, diffuse, phong});
 
     std::vector<Vert> verts{
         std::array{-1.0, -1.0, 1.0},
