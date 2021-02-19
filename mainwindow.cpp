@@ -4,8 +4,14 @@
 #include <QVector2D>
 #include <QGraphicsPixmapItem>
 #include <algorithm>
+#include <memory>
 
 #include "ui_mainwindow.h"
+
+template <typename T>
+QList<typename T::value_type> qlist_from_vec(T vec) {
+    return QList(vec.x.begin(), vec.x.end());
+}
 
 struct Viewport {
     QImage* image;
@@ -61,6 +67,10 @@ struct AmbientLight {
     double intensity() const {
         return ia * ka;
     }
+
+    double max_intensity() const {
+        return intensity();
+    }
 };
 
 struct DiffuseLight {
@@ -68,6 +78,10 @@ struct DiffuseLight {
 
     double intensity(spt::vec3d light, spt::vec3d normal) const {
         return il * kd * std::max(0.0, -spt::dot(normal, light));
+    }
+
+    double max_intensity() const {
+        return il * kd;
     }
 };
 
@@ -85,6 +99,10 @@ struct PhongLight {
         auto reflz = light[2] - projz - projz;
         return il * ks * std::max(0.0, std::pow(reflz, n));
     }
+
+    double max_intensity() const {
+        return il * ks;
+    }
 };
 
 struct SimpleIllum {
@@ -94,14 +112,28 @@ struct SimpleIllum {
 
     double intensity(spt::vec3d light, spt::vec3d normal, spt::vec3d camdir) const {
         return ambient.intensity()
-               + diffuse.intensity(normal, light)
+               + diffuse.intensity(light, normal)
                + phong.intensity(light, normal, camdir);
+    }
+
+    double intensity_normalized(spt::vec3d light, spt::vec3d normal, spt::vec3d camdir) const {
+        return intensity(light, normal, camdir) / max_intensity();
     }
 
     double local_intensity(spt::vec3d light, spt::vec3d normal) const {
         return ambient.intensity()
-               + diffuse.intensity(normal, light)
+               + diffuse.intensity(light, normal)
                + phong.local_intensity(light, normal);
+    }
+
+    double local_intensity_normalized(spt::vec3d light, spt::vec3d normal) const {
+        return local_intensity(light, normal) / max_intensity();
+    }
+
+    double max_intensity() const {
+        return ambient.max_intensity()
+               + diffuse.max_intensity()
+               + phong.max_intensity();
     }
 };
 
@@ -113,8 +145,16 @@ struct PointLight {
         return illum.intensity((at - this->pos).normalize(), normal, camdir);
     }
 
+    double intensity_normalized(spt::vec3d at, spt::vec3d normal, spt::vec3d camdir) const {
+        return illum.intensity_normalized((at - this->pos).normalize(), normal, camdir);
+    }
+
     double local_intensity(spt::vec3d at, spt::vec3d normal) const {
         return illum.local_intensity((at - this->pos).normalize(), normal);
+    }
+
+    double local_intensity_normalized(spt::vec3d at, spt::vec3d normal) const {
+        return illum.local_intensity_normalized((at - this->pos).normalize(), normal);
     }
 
     PointLight() {}
@@ -320,15 +360,45 @@ bool vertray_intersect_mesh(
     return false;
 }
 
-struct Scene {
+struct LocalScene {
     Camera cam;
     PointLight light;
     Mesh mesh;
-};
 
-struct LocalScene {
-    PointLight light;
-    Mesh mesh;
+    virtual double local_intensity(spt::vec3d at, spt::vec3d normal) const {
+        return light.local_intensity(at, normal);
+    }
+
+    virtual double local_intensity_normalized(spt::vec3d at, spt::vec3d normal) const {
+        return light.local_intensity_normalized(at, normal);
+    }
+
+    void translate(spt::vec3d move) {
+        light.pos += move;
+        for (auto& vert : mesh.verts) {
+            vert += move;
+        }
+    }
+
+    void rotate(spt::mat3d rot) {
+        light.pos = spt::dot(rot, light.pos);
+        for (auto& vert : mesh.verts) {
+            vert = spt::dot(rot, vert);
+        }
+        for (auto& normal : mesh.normals) {
+            normal = spt::dot(rot, normal);
+        }
+    }
+
+    void linear_transform(spt::mat3d a, spt::vec3d b) {
+        light.pos = spt::dot(a, light.pos) + b;
+        for (auto& vert : mesh.verts) {
+            vert = spt::dot(a, vert) + b;
+        }
+        for (auto& normal : mesh.normals) {
+            normal = spt::dot(a, normal);
+        }
+    }
 
     void remove_invisible_faces(const std::vector<std::size_t>& invis_verts) {
         if (invis_verts.empty()) {
@@ -368,12 +438,6 @@ struct LocalScene {
 
         mesh.surface = std::move(vis_faces);
     }
-
-    // does not remove dangling vertices
-//    void retain_faces(const std::vector<Face>& faces) {
-//        mesh.surface = faces;
-//        // ...
-//    }
 
     void backface_cull() {
         std::vector<Face> filtered;
@@ -416,17 +480,70 @@ struct LocalScene {
         std::sort(invis_verts.begin(), invis_verts.end());
         remove_invisible_faces(invis_verts);
     }
+};
 
-    LocalScene(Scene scene) : light(scene.light), mesh(scene.mesh) {
-        auto campos = scene.cam.pos;
-        spt::mat3d rot = scene.cam.orient.transpose().inversed();
-        light.pos = spt::dot(rot, light.pos - campos);
-        for (auto& vert : mesh.verts) {
-            vert = spt::dot(rot, vert - campos);
+struct GhostScene : public LocalScene {
+    double local_intensity(spt::vec3d at, spt::vec3d normal) const override {
+        return light.intensity(at, normal, cam.orient[2]);
+    }
+
+    double local_intensity_normalized(spt::vec3d at, spt::vec3d normal) const override {
+        return light.intensity_normalized(at, normal, -cam.orient[2]);
+    }
+};
+
+struct GhostSceneBuilder {
+    std::unique_ptr<GhostScene> locscene;
+    spt::mat3d a;
+    spt::vec3d b;
+
+    std::unique_ptr<GhostScene> build() {
+        locscene->linear_transform(a, b);
+        return std::move(locscene);
+    }
+};
+
+struct Scene {
+    Camera cam;
+    PointLight light;
+    Mesh mesh;
+
+    template <typename TScene = LocalScene>
+    std::unique_ptr<TScene> local(const Camera* loccam = nullptr) const {
+        if (!loccam) {
+            loccam = &cam;
         }
-        for (auto& normal : mesh.normals) {
-            normal = spt::dot(rot, normal);
-        }
+        auto loc = std::make_unique<TScene>();
+        loc->mesh = mesh;
+        loc->light = light;
+        loc->cam = *loccam;
+        auto rot = loccam->orient.transposed().inversed();
+        loc->translate(-loc->cam.pos);
+        loc->rotate(rot);
+        return std::move(loc);
+    }
+
+    GhostSceneBuilder ghost_scene_builder(Camera debcam) const {
+        auto loc = local<GhostScene>();
+        auto finalrot_tr = spt::dot(loc->cam.orient, debcam.orient.inversed());
+        auto finalrot = finalrot_tr.transpose();
+
+        auto cl = loc->cam.pos;
+        auto cg = debcam.pos;
+        auto l = loc->cam.orient;
+        auto g = debcam.orient;
+        auto inv_g = g.inversed();
+        auto a = spt::dot(l, inv_g).transpose();
+        auto int_g_tr = inv_g.transpose();
+        auto b = spt::dot(int_g_tr, cl - cg);
+
+        GhostSceneBuilder builder;
+        builder.a = a;
+        builder.b = b;
+        builder.locscene = std::move(loc);
+        auto camori = builder.locscene->cam.orient;
+        builder.locscene->cam.orient = spt::dot(int_g_tr, camori);
+        return builder;
     }
 };
 
@@ -445,12 +562,8 @@ std::array<int, 2> min_max_image_y(
     return { min_y, max_y };
 }
 
-void render_full(Viewport& viewport, ViewTransformer vtran, const Scene& scene) {
-    LocalScene locscene(scene);
-    locscene.backface_cull();
-    locscene.occlusion_cull(vtran);
-    auto& mesh = locscene.mesh;
-    auto& light = locscene.light;
+void render_full_local(Viewport& viewport, ViewTransformer vtran, const LocalScene& loc) {
+    auto& mesh = loc.mesh;
     auto minmax_y = min_max_image_y(viewport, vtran, mesh);
     for (int ay = minmax_y[0]; ay < minmax_y[1]; ++ay) {
         for (int ax = 0; ax < viewport.width(); ++ax) {
@@ -460,25 +573,28 @@ void render_full(Viewport& viewport, ViewTransformer vtran, const Scene& scene) 
             auto ointer = ray_mesh_nearest_intersection(origin, dir, mesh);
             if (ointer.has_value()) {
                 auto inter = ointer.value();
-                double intensity = light.local_intensity(inter.at, inter.normal);
+                double intensity = loc.local_intensity_normalized(inter.at, inter.normal);
                 viewport.draw_point_grayscale({ax, ay}, intensity);
             }
         }
     }
 }
 
-void render_simple(Viewport& viewport, ViewTransformer vtran, const Scene& scene) {
-    LocalScene locscene(scene);
-    locscene.backface_cull();
-    locscene.occlusion_cull(vtran);
-    auto& mesh = locscene.mesh;
-    auto& light = locscene.light;
+void render_full(Viewport& viewport, ViewTransformer vtran, const Scene& scene) {
+    auto loc = scene.local();
+    loc->backface_cull();
+    loc->occlusion_cull(vtran);
+    render_full_local(viewport, vtran, *loc);
+}
+
+void render_simple_local(Viewport& viewport, ViewTransformer vtran, const LocalScene& loc) {
+    auto& mesh = loc.mesh;
     std::vector<double> intesities;
     intesities.reserve(mesh.surface.size());
     for (auto& face : mesh.surface) {
         auto center = mesh.face_center(face);
         auto normal = mesh.face_normal(face);
-        double intensity = light.local_intensity(center, normal);
+        double intensity = loc.local_intensity_normalized(center, normal);
         intesities.push_back(intensity);
     }
 
@@ -497,9 +613,16 @@ void render_simple(Viewport& viewport, ViewTransformer vtran, const Scene& scene
     }
 }
 
+void render_simple(Viewport& viewport, ViewTransformer vtran, const Scene& scene) {
+    auto loc = scene.local();
+    loc->backface_cull();
+    loc->occlusion_cull(vtran);
+    render_simple_local(viewport, vtran, *loc);
+}
+
 std::optional<spt::vec2d> segm_horizline_intersection(
-    const std::array<spt::vec2d, 2> pts, double y
-) {
+    const std::array<spt::vec2d, 2> pts, double y, double& t
+    ) {
     double p0y = pts[0][1];
     double p1y = pts[1][1];
     double maxabsy = std::max(std::abs(p0y), std::abs(p1y));
@@ -507,12 +630,19 @@ std::optional<spt::vec2d> segm_horizline_intersection(
     if (std::abs(p0y - p1y) <= scaled_eps) {
         return std::nullopt;
     }
-    double t = static_cast<double>(y - p0y) / (p1y - p0y);
+    t = static_cast<double>(y - p0y) / (p1y - p0y);
     if (t < 0.0 || t > 1.0) {
         return std::nullopt;
     } else {
         return pts[0] + t * (pts[1] - pts[0]);
     }
+}
+
+std::optional<spt::vec2d> segm_horizline_intersection(
+    const std::array<spt::vec2d, 2> pts, double y
+) {
+    double t;
+    return segm_horizline_intersection(pts, y, t);
 }
 
 struct EdgeInter {
@@ -521,7 +651,7 @@ struct EdgeInter {
 };
 
 std::optional<std::array<EdgeInter, 2>> triangle_horizline_intersections(
-    const Mesh& mesh, const Face& face, double y
+    const Mesh& mesh, const Face& face, double y, std::array<double, 2>& ts
 ) {
     std::array<spt::vec2d, 2> pres;
     std::array<Edge, 2> eres;
@@ -531,7 +661,8 @@ std::optional<std::array<EdgeInter, 2>> triangle_horizline_intersections(
     for (int i = 0; i < 3; ++i) {
         std::size_t cur = face.verts[i];
         auto curpos = spt::vec2d(mesh.verts[cur]);
-        auto ointer = segm_horizline_intersection({prevpos, curpos}, y);
+        double t;
+        auto ointer = segm_horizline_intersection({prevpos, curpos}, y, t);
         if (ointer.has_value()) {
             if (curpos[1] == y) {
                 std::size_t next = face.verts[0];
@@ -542,6 +673,7 @@ std::optional<std::array<EdgeInter, 2>> triangle_horizline_intersections(
                 if ((curpos[1] - prevpos[1]) * (nextpos[1] - curpos[1]) < 0) {
                     pres[res_i] = ointer.value();
                     eres[res_i] = { prev, cur };
+                    ts[res_i] = t;
                     if (++res_i == 2) {
                         break;
                     }
@@ -549,6 +681,7 @@ std::optional<std::array<EdgeInter, 2>> triangle_horizline_intersections(
             } else {
                 pres[res_i] = ointer.value();
                 eres[res_i] = { prev, cur };
+                ts[res_i] = t;
                 if (++res_i == 2) {
                     break;
                 }
@@ -564,6 +697,7 @@ std::optional<std::array<EdgeInter, 2>> triangle_horizline_intersections(
     if (pres[0][0] > pres[1][0]) {
         std::swap(pres[0], pres[1]);
         std::swap(eres[0], eres[1]);
+        std::swap(ts[0], ts[1]);
     }
     return std::array{
         EdgeInter{ pres[0], eres[0] },
@@ -571,17 +705,41 @@ std::optional<std::array<EdgeInter, 2>> triangle_horizline_intersections(
     };
 }
 
-void render_gouraud(Viewport& viewport, ViewTransformer vtran, const Scene& scene) {
-    LocalScene locscene(scene);
-    locscene.backface_cull();
-    locscene.occlusion_cull(vtran);
+std::optional<std::array<EdgeInter, 2>> triangle_horizline_intersections(
+    const Mesh& mesh, const Face& face, double y
+) {
+    std::array<double, 2> ts;
+    return triangle_horizline_intersections(mesh, face, y, ts);
+}
 
-    auto& mesh = locscene.mesh;
-    auto& light = locscene.light;
+template <typename T>
+T interpolate(const T& v0, const T& v1, double t) {
+    return v0 + t * (v1 - v0);
+}
+
+template <typename T>
+T interpolate_along_edge(const std::vector<T>& vals, Edge edge, double t) {
+    T v0 = vals[edge[0]];
+    T v1 = vals[edge[1]];
+    return interpolate(v0, v1, t);
+}
+
+std::array<int, 2> image_x_draw_range(
+    const Viewport& viewport, ViewTransformer vtran,
+    const std::array<spt::vec2d, 2>& pts) {
+
+    return {
+        std::max(static_cast<int>(vtran.to_viewport(pts[0])[0]), 0),
+        std::min(static_cast<int>(vtran.to_viewport(pts[1])[0]) + 1, viewport.width())
+    };
+}
+
+void render_gouraud_local(Viewport& viewport, ViewTransformer vtran, const LocalScene& loc) {
+    auto& mesh = loc.mesh;
     std::vector<double> verts_intens;
     verts_intens.reserve(mesh.verts.size());
     for (std::size_t i = 0; i < mesh.verts.size(); ++i) {
-        double inten = light.local_intensity(mesh.verts[i], mesh.normals[i]);
+        double inten = loc.local_intensity_normalized(mesh.verts[i], mesh.normals[i]);
         verts_intens.push_back(inten);
     }
 
@@ -589,7 +747,8 @@ void render_gouraud(Viewport& viewport, ViewTransformer vtran, const Scene& scen
     for (int ay = minmax_y[0]; ay < minmax_y[1]; ++ay) {
         for (auto& face : mesh.surface) {
             double world_y = vtran.to_localworld(spt::vec2d({0.0, static_cast<double>(ay)}))[1];
-            auto oxinters = triangle_horizline_intersections(mesh, face, world_y);
+            std::array<double, 2> ts;
+            auto oxinters = triangle_horizline_intersections(mesh, face, world_y, ts);
             if (!oxinters.has_value()) {
                 continue;
             }
@@ -597,26 +756,81 @@ void render_gouraud(Viewport& viewport, ViewTransformer vtran, const Scene& scen
 
             std::array<double, 2> intens;
             for (std::size_t i = 0; i < 2; ++i) {
-                auto edge = xinters[i].edge;
-                double inten_v0 = verts_intens[edge[0]];
-                double inten_v1 = verts_intens[edge[1]];
-
-                auto p = xinters[i].p;
-                auto p0 = spt::vec2d(mesh.verts[edge[0]]);
-                auto p1 = spt::vec2d(mesh.verts[edge[1]]);
-
-                double t = std::sqrt((p - p0).magnitude2() / (p1 - p0).magnitude2());
-                intens[i] = inten_v0 + t * (inten_v1 - inten_v0);
+                intens[i] = interpolate_along_edge(
+                    verts_intens, xinters[i].edge, ts[i]);
             }
 
-            int xbeg = std::max(static_cast<int>(vtran.to_viewport(xinters[0].p)[0]), 0);
-            int xend = std::min(static_cast<int>(vtran.to_viewport(xinters[1].p)[0]) + 1, viewport.width());
-            double delta_inten = (intens[1] - intens[0]) / xend;
-            for (int ax = xbeg; ax < xend; ++ax) {
-                viewport.draw_point_grayscale({ax, ay}, intens[0] + ax * delta_inten);
+            auto xrange = image_x_draw_range(viewport, vtran, {xinters[0].p, xinters[1].p});
+            int axlen = xrange[1] - xrange[0];
+            double delta_inten = 0.0;
+            if (axlen > 1) {
+                delta_inten = (intens[1] - intens[0]) / (axlen - 1);
+            }
+            for (int rel_ax = 0; rel_ax < axlen; ++rel_ax) {
+                viewport.draw_point_grayscale(
+                    {rel_ax + xrange[0], ay},
+                    intens[0] + rel_ax * delta_inten);
             }
         }
     }
+}
+
+void render_gouraud(Viewport& viewport, ViewTransformer vtran, const Scene& scene) {
+    auto loc = scene.local();
+    loc->backface_cull();
+    loc->occlusion_cull(vtran);
+    render_gouraud_local(viewport, vtran, *loc);
+}
+
+void render_phong_local(Viewport& viewport, ViewTransformer vtran, const LocalScene& loc) {
+    auto& mesh = loc.mesh;
+
+    auto minmax_y = min_max_image_y(viewport, vtran, mesh);
+    for (int ay = minmax_y[0]; ay < minmax_y[1]; ++ay) {
+        for (auto& face : mesh.surface) {
+            double world_y = vtran.to_localworld(spt::vec2d({0.0, static_cast<double>(ay)}))[1];
+            std::array<double, 2> ts;
+            auto oxinters = triangle_horizline_intersections(mesh, face, world_y, ts);
+            if (!oxinters.has_value()) {
+                continue;
+            }
+            auto xinters = oxinters.value();
+
+            std::array<spt::vec3d, 2> bnd_pts;
+            std::array<spt::vec3d, 2> bnd_normals;
+            for (std::size_t i = 0; i < 2; ++i) {
+                auto& edge = xinters[i].edge;
+                auto v0 = mesh.verts[edge[0]];
+                auto v1 = mesh.verts[edge[1]];
+                bnd_pts[i] = v0 + ts[i] * (v1 - v0);
+                bnd_normals[i] = interpolate_along_edge(
+                    mesh.normals, edge, ts[i]);
+            }
+
+            auto xrange = image_x_draw_range(viewport, vtran, {xinters[0].p, xinters[1].p});
+            int axlen = xrange[1] - xrange[0];
+            spt::vec3d delta_p;
+            spt::vec3d delta_normal;
+            if (axlen > 1) {
+                delta_p = (bnd_pts[1] - bnd_pts[0]) / (axlen - 1);
+                delta_normal = (bnd_normals[1] - bnd_normals[0]) / (axlen - 1);
+            }
+
+            for (int rel_ax = 0; rel_ax < axlen; ++rel_ax) {
+                auto p = bnd_pts[0] + static_cast<double>(rel_ax) * delta_p;
+                auto normal = (bnd_normals[0] + static_cast<double>(rel_ax) * delta_normal).normalize();
+                double intensity = loc.local_intensity_normalized(p, normal);
+                viewport.draw_point_grayscale({rel_ax + xrange[0], ay}, intensity);
+            }
+        }
+    }
+}
+
+void render_phong(Viewport& viewport, ViewTransformer vtran, const Scene& scene) {
+    auto loc = scene.local();
+    loc->backface_cull();
+    loc->occlusion_cull(vtran);
+    render_phong_local(viewport, vtran, *loc);
 }
 
 spt::mat3d direct_z_along_vec(spt::mat3d orient, spt::vec3d v) {
@@ -626,28 +840,7 @@ spt::mat3d direct_z_along_vec(spt::mat3d orient, spt::vec3d v) {
     return spt::mat3d(x, y, v);
 }
 
-MainWindow::MainWindow(QWidget *parent)
-    : QMainWindow(parent), ui(new Ui::MainWindow) {
-    ui->setupUi(this);
-    for (int i = 0; i < 4; ++i) {
-        gscenes[i] = new QGraphicsScene();
-    }
-
-    auto set_scene = [](QGraphicsView *gview, QGraphicsScene *scene) {
-        gview->setScene(scene);
-        gview->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-        gview->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    };
-
-    set_scene(ui->gview0, gscenes[0]);
-    set_scene(ui->gview1, gscenes[1]);
-    set_scene(ui->gview2, gscenes[2]);
-    set_scene(ui->gview3, gscenes[3]);
-}
-
-MainWindow::~MainWindow() { delete ui; }
-
-void MainWindow::on_render_button_clicked() {
+Scene prepare_scene(Ui::MainWindow* ui) {
     Camera cam;
     cam.pos = spt::vec3d({
         ui->campos_x_sbox->value(),
@@ -655,11 +848,12 @@ void MainWindow::on_render_button_clicked() {
         ui->campos_z_sbox->value()
     });
     cam.orient = spt::mat3d(direct_z_along_vec(
-        spt::mat3d::identity(), -spt::vec3d({
+        spt::mat3d::identity(),
+        -spt::vec3d({
             ui->camdir_x_sbox->value(),
             ui->camdir_y_sbox->value(),
             ui->camdir_z_sbox->value()
-    })));
+        })));
 
     spt::vec3d lightpos({
         ui->light_x_sbox->value(),
@@ -703,24 +897,57 @@ void MainWindow::on_render_button_clicked() {
     scene.cam = cam;
     scene.light = light;
     scene.mesh = mesh;
+    return scene;
+}
+
+MainWindow::MainWindow(QWidget *parent)
+    : QMainWindow(parent), ui(new Ui::MainWindow) {
+    ui->setupUi(this);
+    for (int i = 0; i < 4; ++i) {
+        gscenes[i] = new QGraphicsScene();
+    }
+
+    auto set_scene = [](QGraphicsView *gview, QGraphicsScene *scene) {
+        gview->setScene(scene);
+        gview->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        gview->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    };
+
+    set_scene(ui->gview0, gscenes[0]);
+    set_scene(ui->gview1, gscenes[1]);
+    set_scene(ui->gview2, gscenes[2]);
+    set_scene(ui->gview3, gscenes[3]);
+}
+
+MainWindow::~MainWindow() { delete ui; }
+
+void MainWindow::on_render_button_clicked() {
+    Scene scene = prepare_scene(ui);
 
     double pixelsize = 100.0;
     auto render_and_show = [&scene, pixelsize]
-        (std::function<void(Viewport&, ViewTransformer, const Scene&)> render_fn,
-         QGraphicsView* gview, QGraphicsScene *gscene
-        ) {
+        (std::function<void(Viewport&, ViewTransformer, const LocalScene&)> render_fn,
+         QGraphicsView* gview, QGraphicsScene *gscene) {
+
         QImage image(gview->size(), QImage::Format_RGB32);
         image.fill(Qt::white);
         Viewport viewport(image);
         ViewTransformer vtran(viewport, pixelsize);
-        render_fn(viewport, vtran, scene);
+        auto loc = scene.local<LocalScene>();
+//        Camera ghcam;
+//        ghcam.pos = spt::vec3d({0.0, 0.0, 2.0});
+//        ghcam.orient = spt::mat3d::identity();
+//        auto builder = scene.ghost_scene_builder(ghcam);
+//        auto loc = builder.build();
+        render_fn(viewport, vtran, *loc);
 
         gscene->clear();
         gscene->setSceneRect(gview->rect());
         gscene->addPixmap(QPixmap::fromImage(image))->setPos(0, 0);
     };
 
-    render_and_show(render_full, ui->gview0, gscenes[0]);
-    render_and_show(render_simple, ui->gview1, gscenes[1]);
-    render_and_show(render_gouraud, ui->gview2, gscenes[2]);
+    render_and_show(render_full_local, ui->gview0, gscenes[0]);
+    render_and_show(render_simple_local, ui->gview1, gscenes[1]);
+    render_and_show(render_gouraud_local, ui->gview2, gscenes[2]);
+    render_and_show(render_phong_local, ui->gview3, gscenes[3]);
 }
