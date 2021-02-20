@@ -13,11 +13,18 @@ SOURCES += \
     mainwindow.cpp
 
 HEADERS += \
+    camera.h \
+    helpers.h \
     mainwindow.h \
     mat.h \
+    mesh.h \
+    point-light.h \
+    render.h \
+    scene.h \
     sptalgs.h \
     sptops.h \
-    vec.h
+    vec.h \
+    view.h
 
 FORMS += \
     mainwindow.ui
