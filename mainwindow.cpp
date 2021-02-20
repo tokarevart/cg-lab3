@@ -361,26 +361,26 @@ bool vertray_intersect_mesh(
 }
 
 struct LocalScene {
-    Camera cam;
     PointLight light;
     Mesh mesh;
 
-    virtual double local_intensity(spt::vec3d at, spt::vec3d normal) const {
+    double local_intensity(spt::vec3d at, spt::vec3d normal) const {
         return light.local_intensity(at, normal);
     }
 
-    virtual double local_intensity_normalized(spt::vec3d at, spt::vec3d normal) const {
+    double local_intensity_normalized(spt::vec3d at, spt::vec3d normal) const {
         return light.local_intensity_normalized(at, normal);
     }
 
-    void translate(spt::vec3d move) {
+    LocalScene& translate(spt::vec3d move) {
         light.pos += move;
         for (auto& vert : mesh.verts) {
             vert += move;
         }
+        return *this;
     }
 
-    void rotate(spt::mat3d rot) {
+    LocalScene& rotate(spt::mat3d rot) {
         light.pos = spt::dot(rot, light.pos);
         for (auto& vert : mesh.verts) {
             vert = spt::dot(rot, vert);
@@ -388,9 +388,10 @@ struct LocalScene {
         for (auto& normal : mesh.normals) {
             normal = spt::dot(rot, normal);
         }
+        return *this;
     }
 
-    void linear_transform(spt::mat3d a, spt::vec3d b) {
+    LocalScene& linear_transform(spt::mat3d a, spt::vec3d b) {
         light.pos = spt::dot(a, light.pos) + b;
         for (auto& vert : mesh.verts) {
             vert = spt::dot(a, vert) + b;
@@ -398,6 +399,7 @@ struct LocalScene {
         for (auto& normal : mesh.normals) {
             normal = spt::dot(a, normal);
         }
+        return *this;
     }
 
     void remove_invisible_faces(const std::vector<std::size_t>& invis_verts) {
@@ -439,7 +441,7 @@ struct LocalScene {
         mesh.surface = std::move(vis_faces);
     }
 
-    void backface_cull() {
+    LocalScene& backface_cull() {
         std::vector<Face> filtered;
         for (auto& face : mesh.surface) {
             if (mesh.face_normal(face)[2] > 0) {
@@ -447,9 +449,10 @@ struct LocalScene {
             }
         }
         mesh.surface = std::move(filtered);
+        return *this;
     }
 
-    void occlusion_cull(ViewTransformer vtran) {
+    LocalScene& occlusion_cull(ViewTransformer vtran) {
         std::vector<std::size_t> invis_verts;
 
         spt::vec3d backward({0.0, 0.0, 1.0});
@@ -479,71 +482,45 @@ struct LocalScene {
 
         std::sort(invis_verts.begin(), invis_verts.end());
         remove_invisible_faces(invis_verts);
+        return *this;
+    }
+
+    LocalScene& transform_camera(Camera cam) {
+        auto rot = spt::mat3d(cam.orient).transpose().inversed();
+        translate(-cam.pos);
+        rotate(rot);
+        return *this;
     }
 };
 
 struct GhostScene : public LocalScene {
-    double local_intensity(spt::vec3d at, spt::vec3d normal) const override {
+    Camera cam;
+
+    double local_intensity(spt::vec3d at, spt::vec3d normal) const {
         return light.intensity(at, normal, cam.orient[2]);
     }
 
-    double local_intensity_normalized(spt::vec3d at, spt::vec3d normal) const override {
+    double local_intensity_normalized(spt::vec3d at, spt::vec3d normal) const {
         return light.intensity_normalized(at, normal, -cam.orient[2]);
     }
-};
 
-struct GhostSceneBuilder {
-    std::unique_ptr<GhostScene> locscene;
-    spt::mat3d a;
-    spt::vec3d b;
+    GhostScene(LocalScene loc, Camera actual_cam, Camera ghost_cam) {
+        light = loc.light;
+        mesh = std::move(loc.mesh);
 
-    std::unique_ptr<GhostScene> build() {
-        locscene->linear_transform(a, b);
-        return std::move(locscene);
-    }
-};
-
-struct Scene {
-    Camera cam;
-    PointLight light;
-    Mesh mesh;
-
-    template <typename TScene = LocalScene>
-    std::unique_ptr<TScene> local(const Camera* loccam = nullptr) const {
-        if (!loccam) {
-            loccam = &cam;
-        }
-        auto loc = std::make_unique<TScene>();
-        loc->mesh = mesh;
-        loc->light = light;
-        loc->cam = *loccam;
-        auto rot = loccam->orient.transposed().inversed();
-        loc->translate(-loc->cam.pos);
-        loc->rotate(rot);
-        return std::move(loc);
-    }
-
-    GhostSceneBuilder ghost_scene_builder(Camera debcam) const {
-        auto loc = local<GhostScene>();
-        auto finalrot_tr = spt::dot(loc->cam.orient, debcam.orient.inversed());
-        auto finalrot = finalrot_tr.transpose();
-
-        auto cl = loc->cam.pos;
-        auto cg = debcam.pos;
-        auto l = loc->cam.orient;
-        auto g = debcam.orient;
+        auto cl = actual_cam.pos;
+        auto cg = ghost_cam.pos;
+        auto l = actual_cam.orient;
+        auto g = ghost_cam.orient;
         auto inv_g = g.inversed();
         auto a = spt::dot(l, inv_g).transpose();
-        auto int_g_tr = inv_g.transpose();
-        auto b = spt::dot(int_g_tr, cl - cg);
+        auto inv_g_tr = inv_g.transpose();
+        auto b = spt::dot(inv_g_tr, cl - cg);
 
-        GhostSceneBuilder builder;
-        builder.a = a;
-        builder.b = b;
-        builder.locscene = std::move(loc);
-        auto camori = builder.locscene->cam.orient;
-        builder.locscene->cam.orient = spt::dot(int_g_tr, camori);
-        return builder;
+        cam = actual_cam;
+        cam.orient = spt::dot(inv_g_tr, actual_cam.orient);
+        cam.pos += cl - cg;
+        linear_transform(a, b);
     }
 };
 
@@ -562,8 +539,9 @@ std::array<int, 2> min_max_image_y(
     return { min_y, max_y };
 }
 
-void render_full_local(Viewport& viewport, ViewTransformer vtran, const LocalScene& loc) {
-    auto& mesh = loc.mesh;
+template <typename TScene>
+void render_full(Viewport& viewport, ViewTransformer vtran, const TScene& scene) {
+    auto& mesh = scene.mesh;
     auto minmax_y = min_max_image_y(viewport, vtran, mesh);
     for (int ay = minmax_y[0]; ay < minmax_y[1]; ++ay) {
         for (int ax = 0; ax < viewport.width(); ++ax) {
@@ -573,28 +551,22 @@ void render_full_local(Viewport& viewport, ViewTransformer vtran, const LocalSce
             auto ointer = ray_mesh_nearest_intersection(origin, dir, mesh);
             if (ointer.has_value()) {
                 auto inter = ointer.value();
-                double intensity = loc.local_intensity_normalized(inter.at, inter.normal);
+                double intensity = scene.local_intensity_normalized(inter.at, inter.normal);
                 viewport.draw_point_grayscale({ax, ay}, intensity);
             }
         }
     }
 }
 
-void render_full(Viewport& viewport, ViewTransformer vtran, const Scene& scene) {
-    auto loc = scene.local();
-    loc->backface_cull();
-    loc->occlusion_cull(vtran);
-    render_full_local(viewport, vtran, *loc);
-}
-
-void render_simple_local(Viewport& viewport, ViewTransformer vtran, const LocalScene& loc) {
-    auto& mesh = loc.mesh;
+template <typename TScene>
+void render_simple(Viewport& viewport, ViewTransformer vtran, const TScene& scene) {
+    auto& mesh = scene.mesh;
     std::vector<double> intesities;
     intesities.reserve(mesh.surface.size());
     for (auto& face : mesh.surface) {
         auto center = mesh.face_center(face);
         auto normal = mesh.face_normal(face);
-        double intensity = loc.local_intensity_normalized(center, normal);
+        double intensity = scene.local_intensity_normalized(center, normal);
         intesities.push_back(intensity);
     }
 
@@ -611,13 +583,6 @@ void render_simple_local(Viewport& viewport, ViewTransformer vtran, const LocalS
             }
         }
     }
-}
-
-void render_simple(Viewport& viewport, ViewTransformer vtran, const Scene& scene) {
-    auto loc = scene.local();
-    loc->backface_cull();
-    loc->occlusion_cull(vtran);
-    render_simple_local(viewport, vtran, *loc);
 }
 
 std::optional<spt::vec2d> segm_horizline_intersection(
@@ -734,12 +699,13 @@ std::array<int, 2> image_x_draw_range(
     };
 }
 
-void render_gouraud_local(Viewport& viewport, ViewTransformer vtran, const LocalScene& loc) {
-    auto& mesh = loc.mesh;
+template <typename TScene>
+void render_gouraud(Viewport& viewport, ViewTransformer vtran, const TScene& scene) {
+    auto& mesh = scene.mesh;
     std::vector<double> verts_intens;
     verts_intens.reserve(mesh.verts.size());
     for (std::size_t i = 0; i < mesh.verts.size(); ++i) {
-        double inten = loc.local_intensity_normalized(mesh.verts[i], mesh.normals[i]);
+        double inten = scene.local_intensity_normalized(mesh.verts[i], mesh.normals[i]);
         verts_intens.push_back(inten);
     }
 
@@ -775,16 +741,9 @@ void render_gouraud_local(Viewport& viewport, ViewTransformer vtran, const Local
     }
 }
 
-void render_gouraud(Viewport& viewport, ViewTransformer vtran, const Scene& scene) {
-    auto loc = scene.local();
-    loc->backface_cull();
-    loc->occlusion_cull(vtran);
-    render_gouraud_local(viewport, vtran, *loc);
-}
-
-void render_phong_local(Viewport& viewport, ViewTransformer vtran, const LocalScene& loc) {
-    auto& mesh = loc.mesh;
-
+template <typename TScene>
+void render_phong(Viewport& viewport, ViewTransformer vtran, const TScene& scene) {
+    auto& mesh = scene.mesh;
     auto minmax_y = min_max_image_y(viewport, vtran, mesh);
     for (int ay = minmax_y[0]; ay < minmax_y[1]; ++ay) {
         for (auto& face : mesh.surface) {
@@ -819,18 +778,11 @@ void render_phong_local(Viewport& viewport, ViewTransformer vtran, const LocalSc
             for (int rel_ax = 0; rel_ax < axlen; ++rel_ax) {
                 auto p = bnd_pts[0] + static_cast<double>(rel_ax) * delta_p;
                 auto normal = (bnd_normals[0] + static_cast<double>(rel_ax) * delta_normal).normalize();
-                double intensity = loc.local_intensity_normalized(p, normal);
+                double intensity = scene.local_intensity_normalized(p, normal);
                 viewport.draw_point_grayscale({rel_ax + xrange[0], ay}, intensity);
             }
         }
     }
-}
-
-void render_phong(Viewport& viewport, ViewTransformer vtran, const Scene& scene) {
-    auto loc = scene.local();
-    loc->backface_cull();
-    loc->occlusion_cull(vtran);
-    render_phong_local(viewport, vtran, *loc);
 }
 
 spt::mat3d direct_z_along_vec(spt::mat3d orient, spt::vec3d v) {
@@ -840,7 +792,7 @@ spt::mat3d direct_z_along_vec(spt::mat3d orient, spt::vec3d v) {
     return spt::mat3d(x, y, v);
 }
 
-Scene prepare_scene(Ui::MainWindow* ui) {
+LocalScene prepare_scene(Ui::MainWindow* ui, Camera* pcam = nullptr) {
     Camera cam;
     cam.pos = spt::vec3d({
         ui->campos_x_sbox->value(),
@@ -893,10 +845,13 @@ Scene prepare_scene(Ui::MainWindow* ui) {
     };
     Mesh mesh(verts, surface);
 
-    Scene scene;
-    scene.cam = cam;
+    LocalScene scene;
     scene.light = light;
     scene.mesh = mesh;
+    scene.transform_camera(cam);
+    if (pcam) {
+        *pcam = cam;
+    }
     return scene;
 }
 
@@ -922,32 +877,33 @@ MainWindow::MainWindow(QWidget *parent)
 MainWindow::~MainWindow() { delete ui; }
 
 void MainWindow::on_render_button_clicked() {
-    Scene scene = prepare_scene(ui);
+    Camera actual_cam;
+    LocalScene scene = prepare_scene(ui, &actual_cam);
 
     double pixelsize = 100.0;
-    auto render_and_show = [&scene, pixelsize]
-        (std::function<void(Viewport&, ViewTransformer, const LocalScene&)> render_fn,
-         QGraphicsView* gview, QGraphicsScene *gscene) {
+    auto render_and_show = [&scene, &actual_cam, pixelsize]
+        (auto render_fn, QGraphicsView* gview, QGraphicsScene *gscene) {
 
         QImage image(gview->size(), QImage::Format_RGB32);
         image.fill(Qt::white);
         Viewport viewport(image);
         ViewTransformer vtran(viewport, pixelsize);
-        auto loc = scene.local<LocalScene>();
-//        Camera ghcam;
-//        ghcam.pos = spt::vec3d({0.0, 0.0, 2.0});
-//        ghcam.orient = spt::mat3d::identity();
-//        auto builder = scene.ghost_scene_builder(ghcam);
-//        auto loc = builder.build();
-        render_fn(viewport, vtran, *loc);
+        scene.backface_cull().occlusion_cull(vtran);
+        Camera ghost_cam;
+        ghost_cam.pos = spt::vec3d({0.0, 0.0, 2.0});
+        ghost_cam.orient = spt::mat3d::identity();
+        GhostScene ghost(scene, actual_cam, ghost_cam);
+        ghost.backface_cull().occlusion_cull(vtran);
+        render_fn(viewport, vtran, ghost);
 
         gscene->clear();
         gscene->setSceneRect(gview->rect());
         gscene->addPixmap(QPixmap::fromImage(image))->setPos(0, 0);
     };
 
-    render_and_show(render_full_local, ui->gview0, gscenes[0]);
-    render_and_show(render_simple_local, ui->gview1, gscenes[1]);
-    render_and_show(render_gouraud_local, ui->gview2, gscenes[2]);
-    render_and_show(render_phong_local, ui->gview3, gscenes[3]);
+    using TScene = GhostScene;
+    render_and_show(render_full<TScene>, ui->gview0, gscenes[0]);
+    render_and_show(render_simple<TScene>, ui->gview1, gscenes[1]);
+    render_and_show(render_gouraud<TScene>, ui->gview2, gscenes[2]);
+    render_and_show(render_phong<TScene>, ui->gview3, gscenes[3]);
 }

@@ -60,12 +60,6 @@ struct mat<3, ValueType> {
         std::swap(x[1][2], x[2][1]);
         return *this;
     }
-    mat transposed() const {
-        return {
-            x[0][0], x[1][0], x[2][0],
-            x[0][1], x[1][1], x[2][1],
-            x[0][2], x[1][2], x[2][2] };
-    }
     mat inversed() const {
         auto a00 = x[0][0], a01 = x[0][1], a02 = x[0][2];
         auto a10 = x[1][0], a11 = x[1][1], a12 = x[1][2];
