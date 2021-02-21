@@ -48,11 +48,8 @@ struct LocalScene {
         return *this;
     }
 
-    void remove_invisible_faces(const std::vector<std::size_t>& invis_verts) {
-        if (invis_verts.empty()) {
-            return;
-        }
-
+    std::vector<std::size_t> visible_verts(std::vector<std::size_t> invis_verts) const {
+        std::sort(invis_verts.begin(), invis_verts.end());
         std::vector<std::size_t> vis_verts;
         vis_verts.reserve(mesh.verts.size() - invis_verts.size());
         std::size_t cur_ivert_i = 0;
@@ -64,27 +61,7 @@ struct LocalScene {
                 vis_verts.push_back(i);
             }
         }
-
-        auto face_visible = [&vis_verts](const Face& face) {
-            for (std::size_t vert_id : face.verts) {
-                if (std::find(
-                        vis_verts.begin(),
-                        vis_verts.end(),
-                        vert_id) != vis_verts.end()) {
-                    return true;
-                }
-            }
-            return false;
-        };
-
-        std::vector<Face> vis_faces;
-        for (auto& face : mesh.surface) {
-            if (face_visible(face)) {
-                vis_faces.push_back(face);
-            }
-        }
-
-        mesh.surface = std::move(vis_faces);
+        return vis_verts;
     }
 
     LocalScene& backface_cull() {
@@ -99,19 +76,19 @@ struct LocalScene {
     }
 
     LocalScene& occlusion_cull(ViewTransformer vtran) {
-        std::vector<std::size_t> invis_verts;
+        std::vector<std::size_t> vis_verts;
 
         spt::vec3d backward({0.0, 0.0, 1.0});
         for (std::size_t i = 0; i < mesh.verts.size(); ++i) {
-            if (vertray_intersect_mesh(i, backward, mesh)) {
-                invis_verts.push_back(i);
+            if (!vertray_intersect_mesh(i, backward, mesh)) {
+                vis_verts.push_back(i);
             }
         }
 
-        double upper_x = vtran.to_localworld(spt::vec2i({vtran.viewport->width(), 0}))[0];
-        double lower_x = vtran.to_localworld(spt::vec2i({0, 0}))[0];
-        double upper_y = vtran.to_localworld(spt::vec2i({0, -1}))[1];
-        double lower_y = vtran.to_localworld(spt::vec2i({0, vtran.viewport->height() - 1}))[1];
+        double upper_x = vtran.to_world(spt::vec2i({vtran.viewport->width(), 0}))[0];
+        double lower_x = vtran.to_world(spt::vec2i({0, 0}))[0];
+        double upper_y = vtran.to_world(spt::vec2i({0, -1}))[1];
+        double lower_y = vtran.to_world(spt::vec2i({0, vtran.viewport->height() - 1}))[1];
         for (std::size_t i = 0; i < mesh.verts.size(); ++i) {
             double x = mesh.verts[i][0];
             double y = mesh.verts[i][1];
@@ -119,15 +96,57 @@ struct LocalScene {
             auto inside = [](double l, double c, double u) {
                 return c > l && c < u;
             };
-            if ( z > 0 ||
-                !inside(lower_x, x, upper_x) ||
-                !inside(lower_y, y, upper_y)) {
-                invis_verts.push_back(i);
+            if (z <= 0
+                && inside(lower_x, x, upper_x)
+                && inside(lower_y, y, upper_y)) {
+                vis_verts.push_back(i);
             }
         }
 
-        std::sort(invis_verts.begin(), invis_verts.end());
-        remove_invisible_faces(invis_verts);
+        std::vector<Face> vis_faces;
+        auto bl = spt::vec2d(vtran.bottom_left());
+        auto br = spt::vec2d(vtran.bottom_right());
+        auto tl = spt::vec2d(vtran.top_left());
+        auto tr = spt::vec2d(vtran.top_right());
+        for (auto& face : mesh.surface) {
+            auto prev = spt::vec2d(mesh.verts[face.verts.back()]);
+            for (std::size_t i = 0; i < 3; ++i) {
+                auto cur = spt::vec2d(mesh.verts[face.verts[i]]);
+                auto bounds = std::array{
+                    std::pair(bl, br),
+                    std::pair(br, tr),
+                    std::pair(tl, tr),
+                    std::pair(bl, tl)
+                };
+                if (std::any_of(bounds.begin(), bounds.end(), [&prev, &cur](auto& p) {
+                        return spt::segment_intersect_segment(p.first, p.second, prev, cur).has_value();
+                    })) {
+                    vis_faces.push_back(face);
+                    break;
+                }
+                prev = cur;
+            }
+        }
+
+        auto face_visible = [](auto vis_verts, const Face& face) {
+            for (std::size_t vert_id : face.verts) {
+                if (std::find(
+                        vis_verts.begin(),
+                        vis_verts.end(),
+                        vert_id) == vis_verts.end()) {
+                    return false;
+                }
+            }
+            return true;
+        };
+
+        for (auto& face : mesh.surface) {
+            if (face_visible(vis_verts, face)) {
+                vis_faces.push_back(face);
+            }
+        }
+
+        mesh.surface = std::move(vis_faces);
         return *this;
     }
 

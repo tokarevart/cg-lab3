@@ -20,12 +20,11 @@ std::optional<Inter> ray_mesh_nearest_intersection(
     bool no_inters = true;
     for (std::size_t i = 0; i < mesh.surface.size(); ++i) {
         auto face = mesh.surface[i];
-        auto ointer = spt::ray_intersect_triangle(
+        auto ointer = spt::ray_intersect_thick_triangle(
             origin, dir,
             mesh.verts[face.verts[0]],
             mesh.verts[face.verts[1]],
-            mesh.verts[face.verts[2]]
-            );
+            mesh.verts[face.verts[2]]);
         if (!ointer.has_value()) {
             continue;
         }
@@ -47,6 +46,27 @@ std::optional<Inter> ray_mesh_nearest_intersection(
     }
 }
 
+std::optional<Inter> ray_mesh_intersection(
+    spt::vec3d origin, spt::vec3d dir, const Mesh& mesh) {
+
+    for (std::size_t i = 0; i < mesh.surface.size(); ++i) {
+        auto face = mesh.surface[i];
+        auto ointer = spt::ray_intersect_thick_triangle(
+            origin, dir,
+            mesh.verts[face.verts[0]],
+            mesh.verts[face.verts[1]],
+            mesh.verts[face.verts[2]]);
+        if (ointer.has_value()) {
+            return Inter{
+                ointer.value(),
+                mesh.face_normal(face),
+                i
+            };
+        }
+    }
+    return std::nullopt;
+}
+
 std::optional<Inter> vertray_mesh_nearest_intersection(
     std::size_t origin_vert, spt::vec3d dir, const Mesh& mesh) {
 
@@ -62,12 +82,12 @@ std::optional<Inter> vertray_mesh_nearest_intersection(
         }
 
         auto origin = mesh.verts[origin_vert];
-        auto ointer = spt::ray_intersect_triangle(
+        auto ointer = spt::ray_intersect_thick_triangle(
             origin, dir,
             mesh.verts[face.verts[0]],
             mesh.verts[face.verts[1]],
             mesh.verts[face.verts[2]]
-            );
+        );
         if (!ointer.has_value()) {
             continue;
         }
@@ -99,12 +119,11 @@ bool vertray_intersect_mesh(
         }
 
         auto origin = mesh.verts[origin_vert];
-        auto ointer = spt::ray_intersect_triangle(
+        auto ointer = spt::ray_intersect_thick_triangle(
             origin, dir,
             mesh.verts[face.verts[0]],
             mesh.verts[face.verts[1]],
-            mesh.verts[face.verts[2]]
-            );
+            mesh.verts[face.verts[2]]);
         if (ointer.has_value()) {
             return true;
         }
@@ -127,9 +146,9 @@ std::array<int, 2> min_max_image_y(
     return { min_y, max_y };
 }
 
-std::optional<spt::vec2d> segm_horizline_intersection(
-    const std::array<spt::vec2d, 2> pts, double y, double& t
-    ) {
+std::optional<spt::vec2d> segment_horizline_intersection(
+    const std::array<spt::vec2d, 2> pts, double y, double& t) {
+
     double p0y = pts[0][1];
     double p1y = pts[1][1];
     double maxabsy = std::max(std::abs(p0y), std::abs(p1y));
@@ -145,11 +164,11 @@ std::optional<spt::vec2d> segm_horizline_intersection(
     }
 }
 
-std::optional<spt::vec2d> segm_horizline_intersection(
-    const std::array<spt::vec2d, 2> pts, double y
-    ) {
+std::optional<spt::vec2d> segment_horizline_intersection(
+    const std::array<spt::vec2d, 2> pts, double y) {
+
     double t;
-    return segm_horizline_intersection(pts, y, t);
+    return segment_horizline_intersection(pts, y, t);
 }
 
 struct EdgeInter {
@@ -158,8 +177,8 @@ struct EdgeInter {
 };
 
 std::optional<std::array<EdgeInter, 2>> triangle_horizline_intersections(
-    const Mesh& mesh, const Face& face, double y, std::array<double, 2>& ts
-    ) {
+    const Mesh& mesh, const Face& face, double y, std::array<double, 2>& ts) {
+
     std::array<spt::vec2d, 2> pres;
     std::array<Edge, 2> eres;
     std::size_t res_i = 0;
@@ -169,7 +188,7 @@ std::optional<std::array<EdgeInter, 2>> triangle_horizline_intersections(
         std::size_t cur = face.verts[i];
         auto curpos = spt::vec2d(mesh.verts[cur]);
         double t;
-        auto ointer = segm_horizline_intersection({prevpos, curpos}, y, t);
+        auto ointer = segment_horizline_intersection({prevpos, curpos}, y, t);
         if (ointer.has_value()) {
             if (curpos[1] == y) {
                 std::size_t next = face.verts[0];
@@ -213,8 +232,8 @@ std::optional<std::array<EdgeInter, 2>> triangle_horizline_intersections(
 }
 
 std::optional<std::array<EdgeInter, 2>> triangle_horizline_intersections(
-    const Mesh& mesh, const Face& face, double y
-    ) {
+    const Mesh& mesh, const Face& face, double y) {
+
     std::array<double, 2> ts;
     return triangle_horizline_intersections(mesh, face, y, ts);
 }

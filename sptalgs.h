@@ -102,7 +102,7 @@ vec<3, Real> project_on_plane(
 }
 
 template <typename Real>
-std::optional<vec<2, Real>> segm_intersect_line(
+std::optional<vec<2, Real>> segment_intersect_line(
     const vec<2, Real>& segm_p0, const vec<2, Real>& segm_p1,
     const vec<2, Real>& line_p0, const vec<2, Real>& line_p1) {
 
@@ -121,6 +121,33 @@ std::optional<vec<2, Real>> segm_intersect_line(
 
     Real t = d1 / d;
     return segm_p0 + t * p1_p0;
+}
+
+template <typename Real>
+std::optional<vec<2, Real>> segment_intersect_segment(
+    const vec<2, Real>& segm0_p0, const vec<2, Real>& segm0_p1,
+    const vec<2, Real>& segm1_p0, const vec<2, Real>& segm1_p1) {
+
+    auto p1_p0 = segm0_p1 - segm0_p0;
+    auto q1_q0 = segm1_p1 - segm1_p0;
+    Real d = spt::det(q1_q0, -p1_p0);
+    if (std::abs(d) <= std::numeric_limits<Real>::epsilon()) {
+        return std::nullopt;
+    }
+
+    auto p0_q0 = segm0_p0 - segm1_p0;
+    Real d0 = spt::det(p0_q0, -p1_p0);
+    if (d * d0 < 0 || std::abs(d0) > std::abs(d)) {
+        return std::nullopt;
+    }
+
+    Real d1 = spt::det(q1_q0, p0_q0);
+    if (d * d1 < 0 || std::abs(d1) > std::abs(d)) {
+        return std::nullopt;
+    }
+
+    Real t = d1 / d;
+    return segm0_p0 + t * p1_p0;
 }
 
 template <typename Real>
@@ -209,6 +236,43 @@ std::optional<vec<3, Real>> ray_intersect_triangle(
     auto qvec = spt::cross(tvec, edges[0]);
     auto v = spt::dot(dir, qvec) * inv_det;
     if (v < static_cast<Real>(0) || u + v > static_cast<Real>(1)) {
+        return std::nullopt;
+    }
+
+    auto t = spt::dot(edges[1], qvec) * inv_det;
+    if (t < static_cast<Real>(0)) {
+        return std::nullopt;
+    } else {
+        return origin + t * dir;
+    }
+}
+
+template <typename Real>
+std::optional<vec<3, Real>> ray_intersect_thick_triangle(
+    const vec<3, Real> &origin, const vec<3, Real> &dir,
+    const vec<3, Real> &tr_p0, const vec<3, Real> &tr_p1, const vec<3, Real> &tr_p2) {
+
+    std::array edges{tr_p1 - tr_p0, tr_p2 - tr_p0};
+
+    auto pvec = spt::cross(dir, edges[1]);
+    auto det = spt::dot(edges[0], pvec);
+    if (std::abs(det) <= std::numeric_limits<Real>::epsilon()) {
+        return std::nullopt;
+    }
+
+    auto inv_det = static_cast<Real>(1) / det;
+
+    auto tvec = origin - tr_p0;
+    auto u = spt::dot(tvec, pvec) * inv_det;
+    if (u < -std::numeric_limits<Real>::epsilon()
+        || u > static_cast<Real>(1) + std::numeric_limits<Real>::epsilon()) {
+        return std::nullopt;
+    }
+
+    auto qvec = spt::cross(tvec, edges[0]);
+    auto v = spt::dot(dir, qvec) * inv_det;
+    if (v < -std::numeric_limits<Real>::epsilon()
+        || u + v > static_cast<Real>(1) + std::numeric_limits<Real>::epsilon()) {
         return std::nullopt;
     }
 

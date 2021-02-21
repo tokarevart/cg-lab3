@@ -115,17 +115,16 @@ void MainWindow::on_render_button_clicked() {
     double pixelsize = 100.0;
     auto render_and_show = [&scene, &actual_cam, pixelsize]
         (auto render_fn, QGraphicsView* gview, QGraphicsScene *gscene) {
-
         QImage image(gview->size(), QImage::Format_RGB32);
         image.fill(Qt::white);
         Viewport viewport(image);
         ViewTransformer vtran(viewport, pixelsize);
-        scene.backface_cull().occlusion_cull(vtran);
+        scene.backface_cull();
         Camera ghost_cam;
         ghost_cam.pos = spt::vec3d({0.0, 0.0, 2.0});
         ghost_cam.orient = spt::mat3d::identity();
         GhostScene ghost(scene, actual_cam, ghost_cam);
-        ghost.backface_cull().occlusion_cull(vtran);
+        ghost.backface_cull();
         render_fn(viewport, vtran, ghost);
 
         gscene->clear();
