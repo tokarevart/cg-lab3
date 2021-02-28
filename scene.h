@@ -63,12 +63,6 @@ struct LocalScene {
         std::vector<std::size_t> vis_verts;
 
         spt::vec3d backward({0.0, 0.0, 1.0});
-        for (std::size_t i = 0; i < mesh.verts.size(); ++i) {
-            if (!vertray_intersect_mesh(i, backward, mesh)) {
-                vis_verts.push_back(i);
-            }
-        }
-
         double upper_x = vtran.to_world(spt::vec2i({vtran.viewport->width(), 0}))[0];
         double lower_x = vtran.to_world(spt::vec2i({0, 0}))[0];
         double upper_y = vtran.to_world(spt::vec2i({0, -1}))[1];
@@ -82,7 +76,8 @@ struct LocalScene {
             };
             if (z <= 0
                 && inside(lower_x, x, upper_x)
-                && inside(lower_y, y, upper_y)) {
+                && inside(lower_y, y, upper_y)
+                && !vertray_intersect_mesh(i, backward, mesh)) {
                 vis_verts.push_back(i);
             }
         }
