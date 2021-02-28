@@ -48,22 +48,6 @@ struct LocalScene {
         return *this;
     }
 
-    std::vector<std::size_t> visible_verts(std::vector<std::size_t> invis_verts) const {
-        std::sort(invis_verts.begin(), invis_verts.end());
-        std::vector<std::size_t> vis_verts;
-        vis_verts.reserve(mesh.verts.size() - invis_verts.size());
-        std::size_t cur_ivert_i = 0;
-        for (std::size_t i = 0; i < mesh.verts.size(); ++i) {
-            if (cur_ivert_i < invis_verts.size()
-                && i == invis_verts[cur_ivert_i]) {
-                ++cur_ivert_i;
-            } else {
-                vis_verts.push_back(i);
-            }
-        }
-        return vis_verts;
-    }
-
     LocalScene& backface_cull() {
         std::vector<Face> filtered;
         for (auto& face : mesh.surface) {

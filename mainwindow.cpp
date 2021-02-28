@@ -114,7 +114,7 @@ void MainWindow::on_render_button_clicked() {
 
     double pixelsize = 100.0;
     auto render_and_show = [&scene, &actual_cam, pixelsize]
-        (auto render_fn, QGraphicsView* gview, QGraphicsScene *gscene) {
+        (auto render_fn, QGraphicsView* gview, QGraphicsScene* gscene) {
         QImage image(gview->size(), QImage::Format_RGB32);
         image.fill(Qt::white);
         Viewport viewport(image);
@@ -125,14 +125,14 @@ void MainWindow::on_render_button_clicked() {
         ghost_cam.orient = spt::mat3d::identity();
         GhostScene ghost(scene, actual_cam, ghost_cam);
         ghost.backface_cull();
-        render_fn(viewport, vtran, ghost);
+        render_fn(viewport, vtran, scene);
 
         gscene->clear();
         gscene->setSceneRect(gview->rect());
         gscene->addPixmap(QPixmap::fromImage(image))->setPos(0, 0);
     };
 
-    using TScene = GhostScene;
+    using TScene = LocalScene;
     render_and_show(render_full<TScene>, ui->gview0, gscenes[0]);
     render_and_show(render_simple<TScene>, ui->gview1, gscenes[1]);
     render_and_show(render_gouraud<TScene>, ui->gview2, gscenes[2]);
