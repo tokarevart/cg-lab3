@@ -125,7 +125,43 @@ struct LocalScene {
             }
         }
 
+        for (auto& face : vis_faces) {
+            for (std::size_t v : face.verts) {
+                if (std::find(vis_verts.begin(), vis_verts.end(), v) == vis_verts.end()) {
+                    vis_verts.push_back(v);
+                }
+            }
+        }
+
+        auto find_pos = [](const std::vector<std::size_t>& cont, std::size_t val) {
+            std::size_t i = 0;
+            while (i < cont.size()) {
+                if (cont[i] == val) {
+                    break;
+                }
+                ++i;
+            }
+            return i;
+        };
+
+        for (auto& face : vis_faces) {
+            for (std::size_t& v : face.verts) {
+                v = find_pos(vis_verts, v);
+            }
+        }
+
+        std::vector<Vert> vis_verts_poses;
+        std::vector<spt::vec3d> vis_verts_normals;
+        vis_verts_poses.reserve(vis_verts.size());
+        vis_verts_normals.reserve(vis_verts.size());
+        for (std::size_t v : vis_verts) {
+            vis_verts_poses.push_back(mesh.verts[v]);
+            vis_verts_normals.push_back(mesh.normals[v]);
+        }
+
+        mesh.verts = std::move(vis_verts_poses);
         mesh.surface = std::move(vis_faces);
+        mesh.normals = std::move(vis_verts_normals);
         return *this;
     }
 
